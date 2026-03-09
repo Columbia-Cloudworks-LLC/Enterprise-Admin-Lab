@@ -331,12 +331,19 @@ function Test-EALabGuestConfiguration {
 
         if ($vm.guestConfiguration.PSObject.Properties.Name -contains 'domainJoin' -and $null -ne $vm.guestConfiguration.domainJoin) {
             $domainJoin = $vm.guestConfiguration.domainJoin
+            $hasInlineDomainAdmin = ($Config.PSObject.Properties.Name -contains 'credentials' -and
+                $null -ne $Config.credentials -and
+                $Config.credentials.PSObject.Properties.Name -contains 'domainAdminUser' -and
+                $Config.credentials.PSObject.Properties.Name -contains 'domainAdminPassword' -and
+                -not [string]::IsNullOrWhiteSpace([string]$Config.credentials.domainAdminUser) -and
+                -not [string]::IsNullOrWhiteSpace([string]$Config.credentials.domainAdminPassword))
             if ($domainJoin.PSObject.Properties.Name -contains 'enabled' -and
                 $domainJoin.enabled -eq $true -and
-                ($domainJoin.PSObject.Properties.Name -notcontains 'credentialRef' -or [string]::IsNullOrWhiteSpace([string]$domainJoin.credentialRef))) {
+                ($domainJoin.PSObject.Properties.Name -notcontains 'credentialRef' -or [string]::IsNullOrWhiteSpace([string]$domainJoin.credentialRef)) -and
+                -not $hasInlineDomainAdmin) {
                 [void]$errors.Add([PSCustomObject]@{
                     Field = "$field.guestConfiguration.domainJoin.credentialRef"
-                    Message = 'credentialRef is required when domainJoin.enabled is true.'
+                    Message = 'credentialRef is required when domainJoin.enabled is true unless credentials.domainAdminUser/domainAdminPassword are set.'
                 })
             }
 
@@ -605,6 +612,20 @@ function Test-EALabConfig {
                 if (-not [string]::IsNullOrWhiteSpace($value) -and $value.Length -lt 3) {
                     Add-Error "credentials.$credentialField" "$credentialField must be at least 3 characters when provided."
                 }
+            }
+        }
+
+        foreach ($userPasswordPair in @(
+                @{ UserField = 'localAdminUser'; PasswordField = 'localAdminPassword' },
+                @{ UserField = 'domainAdminUser'; PasswordField = 'domainAdminPassword' }
+            )) {
+            $userField = [string]$userPasswordPair.UserField
+            $passwordField = [string]$userPasswordPair.PasswordField
+            $hasUser = ($Config.credentials.PSObject.Properties.Name -contains $userField -and -not [string]::IsNullOrWhiteSpace([string]$Config.credentials.$userField))
+            $hasPassword = ($Config.credentials.PSObject.Properties.Name -contains $passwordField -and -not [string]::IsNullOrWhiteSpace([string]$Config.credentials.$passwordField))
+
+            if ($hasUser -xor $hasPassword) {
+                Add-Error "credentials.$userField" "$userField and $passwordField must be provided together when using inline credentials."
             }
         }
     }

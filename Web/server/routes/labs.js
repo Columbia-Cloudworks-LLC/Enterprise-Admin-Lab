@@ -181,6 +181,10 @@ function runPowerShell(args) {
           status = 403;
         } else if (message.includes('Provisioning prerequisites failed')) {
           status = 400;
+        } else if (message.includes('already exists. Re-run create with -Force')) {
+          status = 409;
+        } else if (message.includes('The file exists.')) {
+          status = 409;
         }
         reject(Object.assign(new Error(message), { status }));
         return;
@@ -206,6 +210,24 @@ function toBooleanFlag(value) {
     return value === 1;
   }
   return false;
+}
+
+function parseMissingCredentialRefs(message) {
+  const marker = 'Missing or unreadable credential refs:';
+  if (!message || !message.includes(marker)) {
+    return [];
+  }
+
+  const markerIndex = message.indexOf(marker);
+  const start = markerIndex + marker.length;
+  const remainder = message.slice(start);
+  const endIndex = remainder.indexOf('.');
+  const refsSegment = (endIndex >= 0 ? remainder.slice(0, endIndex) : remainder).trim();
+  if (!refsSegment) {
+    return [];
+  }
+
+  return refsSegment.split(',').map((value) => value.trim()).filter(Boolean);
 }
 
 // Helper: write lab config to disk
@@ -267,7 +289,7 @@ router.post('/:name/launch', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Lab not found' });
     }
 
-    const args = ['-File', invokeScriptPath, '-Create', '-LabName', safeName];
+    const args = ['-File', invokeScriptPath, '-Create', '-LabName', safeName, '-Force'];
     if (toBooleanFlag(req.body?.skipOrchestration)) {
       args.push('-SkipOrchestration');
     }
@@ -275,10 +297,16 @@ router.post('/:name/launch', async (req, res) => {
     res.json({ success: true, output: result.stdout });
   } catch (err) {
     const status = err.status || 500;
+    const errorMessage = err.message || 'An internal error occurred';
+    const missingCredentialRefs = parseMissingCredentialRefs(errorMessage);
     if (status >= 500) {
       console.error('[EALab] POST /api/labs/:name/launch error:', err);
     }
-    res.status(status).json({ success: false, error: err.message || 'An internal error occurred' });
+    res.status(status).json({
+      success: false,
+      error: errorMessage,
+      missingCredentialRefs,
+    });
   }
 });
 

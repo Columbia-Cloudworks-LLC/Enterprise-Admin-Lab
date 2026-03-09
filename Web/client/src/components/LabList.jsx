@@ -69,7 +69,12 @@ export default function LabList() {
       }
       await refetch();
     } catch (err) {
-      alert(`Launch failed: ${err.message}`);
+      const missingRefs = Array.isArray(err?.details?.missingCredentialRefs) ? err.details.missingCredentialRefs : [];
+      if (missingRefs.length > 0) {
+        alert(`Launch failed: ${err.message}\n\nMissing credential refs:\n- ${missingRefs.join('\n- ')}`);
+      } else {
+        alert(`Launch failed: ${err.message}`);
+      }
     } finally {
       setBusyAction(false);
     }

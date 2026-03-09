@@ -47,7 +47,13 @@
             "properties": {
                 "localAdminRef": { "type": "string" },
                 "domainAdminRef": { "type": "string" },
-                "dsrmRef": { "type": "string" }
+                "dsrmRef": { "type": "string" },
+                "localAdminUser": { "type": "string" },
+                "localAdminPassword": { "type": "string" },
+                "domainAdminUser": { "type": "string" },
+                "domainAdminPassword": { "type": "string" },
+                "dsrmUser": { "type": "string" },
+                "dsrmPassword": { "type": "string" }
             }
         },
         "guestDefaults": {

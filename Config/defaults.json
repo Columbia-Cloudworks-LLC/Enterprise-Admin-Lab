@@ -20,7 +20,13 @@
     "defaultCredentials": {
         "localAdminRef": "",
         "domainAdminRef": "",
-        "dsrmRef": ""
+        "dsrmRef": "",
+        "localAdminUser": "Administrator",
+        "localAdminPassword": "LabPassw0rd!",
+        "domainAdminUser": "LAB\\Administrator",
+        "domainAdminPassword": "LabPassw0rd!",
+        "dsrmUser": "DSRM",
+        "dsrmPassword": "LabPassw0rd!"
     },
     "guestDefaults": {
         "locale": "en-US",

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { usePrerequisites } from '../hooks/usePrerequisites.js';
 import StatusBadge from './StatusBadge.jsx';
 
@@ -10,7 +11,11 @@ function toBadgeStatus(status) {
 }
 
 export default function PrerequisitesPanel() {
-  const { checks, loading, error, runCheck } = usePrerequisites();
+  const { checks, loading, error, runCheck, remediateCheck } = usePrerequisites();
+  const [copiedCheck, setCopiedCheck] = useState('');
+  const [installingCheck, setInstallingCheck] = useState('');
+  const [actionMessage, setActionMessage] = useState('');
+  const [actionError, setActionError] = useState('');
   const failedCount = checks.filter((item) => item.status === 'Failed').length;
   const warningCount = checks.filter((item) => item.status === 'Warning').length;
   const passedCount = checks.filter((item) => item.status === 'Passed').length;
@@ -18,6 +23,41 @@ export default function PrerequisitesPanel() {
   const pendingCount = checks.filter((item) => item.status === 'Pending').length;
   const totalChecks = checks.length;
   const allFinalized = totalChecks > 0 && checks.every((item) => ['Passed', 'Failed', 'Warning'].includes(item.status));
+
+  const handleCopyCommand = async (name, command) => {
+    if (!command) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopiedCheck(name);
+      window.setTimeout(() => {
+        setCopiedCheck((current) => (current === name ? '' : current));
+      }, 1500);
+    } catch {
+      setCopiedCheck('');
+    }
+  };
+
+  const handleInstall = async (name) => {
+    if (!name) {
+      return;
+    }
+
+    setActionError('');
+    setActionMessage('');
+    setInstallingCheck(name);
+    try {
+      const result = await remediateCheck(name);
+      setActionMessage(result?.message || `Remediation executed for '${name}'.`);
+      await runCheck();
+    } catch (installError) {
+      setActionError(installError.message || `Failed to remediate '${name}'.`);
+    } finally {
+      setInstallingCheck('');
+    }
+  };
 
   return (
     <div>
@@ -62,6 +102,7 @@ export default function PrerequisitesPanel() {
               <th className="w-56">Category</th>
               <th>Check</th>
               <th>Details</th>
+              <th className="w-72">Quick Fix</th>
             </tr>
           </thead>
           <tbody>
@@ -73,6 +114,43 @@ export default function PrerequisitesPanel() {
                 <td className="text-sm text-gray-600">{item.category || 'System'}</td>
                 <td className="font-medium">{item.name}</td>
                 <td className="text-sm text-gray-600">{item.message || 'No details.'}</td>
+                <td className="text-sm text-gray-600">
+                  {item.quickFix && ['Failed', 'Warning'].includes(item.status) ? (
+                    <div className="flex items-center gap-2">
+                      {item.canRemediate && (
+                        <button
+                          type="button"
+                          onClick={() => handleInstall(item.name)}
+                          disabled={Boolean(installingCheck)}
+                          className="px-2 py-1 bg-[#007ACC] text-white rounded text-xs font-medium hover:bg-[#005A9C] disabled:opacity-50 transition-colors"
+                        >
+                          {installingCheck === item.name ? 'Installing...' : 'Install'}
+                        </button>
+                      )}
+                      {item.quickFix.command && (
+                        <button
+                          type="button"
+                          onClick={() => handleCopyCommand(item.name, item.quickFix.command)}
+                          className="px-2 py-1 border border-gray-300 rounded text-xs font-medium hover:bg-gray-50 transition-colors"
+                        >
+                          {copiedCheck === item.name ? 'Copied' : 'Copy install cmd'}
+                        </button>
+                      )}
+                      {item.quickFix.docsUrl && (
+                        <a
+                          href={item.quickFix.docsUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-xs font-medium text-[#007ACC] hover:text-[#005A9C]"
+                        >
+                          Docs
+                        </a>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-xs text-gray-400">-</span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -83,6 +161,18 @@ export default function PrerequisitesPanel() {
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
           <p className="text-red-800 font-medium">Check failed</p>
           <p className="text-red-600 text-sm mt-1">{error}</p>
+        </div>
+      )}
+      {actionError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+          <p className="text-red-800 font-medium">Remediation failed</p>
+          <p className="text-red-600 text-sm mt-1">{actionError}</p>
+        </div>
+      )}
+      {actionMessage && (
+        <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6">
+          <p className="text-green-800 font-medium">Remediation completed</p>
+          <p className="text-green-700 text-sm mt-1">{actionMessage}</p>
         </div>
       )}
     </div>

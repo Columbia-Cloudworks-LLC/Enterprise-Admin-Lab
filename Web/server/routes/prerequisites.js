@@ -22,8 +22,36 @@ const PREREQUISITE_CHECKS = [
   { name: 'ImportExcel Module', category: 'Modules', message: 'Checks ImportExcel module availability.' },
   { name: 'Disk Space', category: 'Storage', message: 'Checks available storage against minimum guidance.' },
   { name: 'Default vSwitch', category: 'Network', message: 'Checks Hyper-V virtual switch availability.' },
-  { name: 'Terraform CLI', category: 'Provisioning', message: 'Checks Terraform CLI availability.' },
-  { name: 'Docker Desktop', category: 'Provisioning', message: 'Checks Docker Desktop/daemon availability.' },
+  {
+    name: 'Terraform CLI',
+    category: 'Provisioning',
+    message: 'Checks Terraform CLI availability.',
+    canRemediate: true,
+    quickFix: {
+      docsUrl: 'https://developer.hashicorp.com/terraform/downloads',
+      command: 'winget install --id Hashicorp.Terraform --exact --accept-source-agreements --accept-package-agreements',
+    },
+  },
+  {
+    name: 'Docker Desktop',
+    category: 'Provisioning',
+    message: 'Checks Docker Desktop/daemon availability.',
+    canRemediate: true,
+    quickFix: {
+      docsUrl: 'https://www.docker.com/products/docker-desktop',
+      command: 'winget install --id Docker.DockerDesktop --exact --accept-source-agreements --accept-package-agreements',
+    },
+  },
+  {
+    name: 'Oscdimg Tool',
+    category: 'Provisioning',
+    message: 'Checks oscdimg.exe availability for unattended media generation.',
+    canRemediate: true,
+    quickFix: {
+      docsUrl: 'https://learn.microsoft.com/windows-hardware/get-started/adk-install',
+      command: '$env:Path += ";C:\\Program Files (x86)\\Windows Kits\\10\\Assessment and Deployment Kit\\Deployment Tools\\amd64\\Oscdimg"',
+    },
+  },
 ];
 
 // Prefer PowerShell 7 (pwsh); fall back to Windows PowerShell 5.1.
@@ -85,14 +113,16 @@ function buildMergedResults(parsedResults) {
   return PREREQUISITE_CHECKS.map((check) => {
     const result = byName.get(check.name);
     if (result) {
-      return result;
+      return {
+        ...check,
+        ...result,
+      };
     }
 
     return {
-      name: check.name,
-      category: check.category,
+      ...check,
       status: 'Warning',
-      message: 'No result returned for this check.',
+      message: `No result returned for this check. ${check.message}`,
     };
   });
 }
@@ -165,6 +195,81 @@ router.get('/checks', (req, res) => {
   res.json(PREREQUISITE_CHECKS);
 });
 
+router.post('/remediate', (req, res) => {
+  const prerequisiteName = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  if (!prerequisiteName) {
+    return res.status(400).json({ error: 'Missing prerequisite name.' });
+  }
+
+  const knownCheck = PREREQUISITE_CHECKS.find((check) => check.name === prerequisiteName);
+  if (!knownCheck) {
+    return res.status(404).json({ error: `Unknown prerequisite '${prerequisiteName}'.` });
+  }
+
+  if (!knownCheck.canRemediate) {
+    return res.status(400).json({ error: `No remediation available for '${prerequisiteName}'.` });
+  }
+
+  const ps = spawn(psExe, [
+    '-NonInteractive',
+    '-NoProfile',
+    '-File',
+    scriptPath,
+    '-RemediatePrerequisite',
+    '-PrerequisiteName',
+    prerequisiteName,
+  ]);
+
+  let stdout = '';
+  let stderr = '';
+  let outputBytes = 0;
+  let timedOut = false;
+  const remediationTimeoutMs = 10 * 60 * 1000;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ps.kill('SIGTERM');
+    return res.status(504).json({ error: `Remediation timed out after ${remediationTimeoutMs / 1000} seconds.` });
+  }, remediationTimeoutMs);
+
+  ps.stdout.on('data', (data) => {
+    outputBytes += data.length;
+    if (outputBytes <= MAX_OUTPUT_BYTES) {
+      stdout += data.toString();
+    }
+  });
+
+  ps.stderr.on('data', (data) => {
+    outputBytes += data.length;
+    if (outputBytes <= MAX_OUTPUT_BYTES) {
+      stderr += data.toString();
+    }
+  });
+
+  ps.on('close', (code) => {
+    clearTimeout(timer);
+    if (timedOut) {
+      return;
+    }
+
+    if (code !== 0) {
+      const details = stderr.trim() || stdout.trim() || `PowerShell exited with code ${code}.`;
+      return res.status(500).json({ error: `Remediation failed for '${prerequisiteName}'.`, details });
+    }
+
+    return res.json({
+      ok: true,
+      name: prerequisiteName,
+      message: `Remediation executed for '${prerequisiteName}'.`,
+      output: stdout.trim(),
+    });
+  });
+
+  ps.on('error', (err) => {
+    clearTimeout(timer);
+    return res.status(500).json({ error: `Failed to start remediation: ${err.message}` });
+  });
+});
+
 router.get('/stream', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -181,8 +286,10 @@ router.get('/stream', (req, res) => {
         return;
       }
 
-      incrementalResults.push(parsedLine);
-      sendSseEvent(res, 'update', parsedLine);
+      const checkMeta = PREREQUISITE_CHECKS.find((check) => check.name === parsedLine.name);
+      const enriched = checkMeta ? { ...checkMeta, ...parsedLine } : parsedLine;
+      incrementalResults.push(enriched);
+      sendSseEvent(res, 'update', enriched);
     },
     onComplete: ({ code, stdout, stderr }) => {
       if (code !== 0 && stderr) {

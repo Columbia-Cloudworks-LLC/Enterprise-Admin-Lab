@@ -10,6 +10,10 @@
     FunctionsToExport = @(
         'Get-EALabCredential',
         'Get-EALabCredentialSet',
+        'Resolve-EALabCredentialRef',
+        'Set-EALabCredentialRef',
+        'Remove-EALabCredentialRef',
+        'Test-EALabCredentialRef',
         'Test-EALabCredentialManagerSupport'
     )
     CmdletsToExport   = @()
@@ -19,7 +23,7 @@
         PSData = @{
             Tags         = @('EALab', 'Credentials', 'Security')
             ProjectUri   = ''
-            ReleaseNotes = 'Adds Credential Manager reference lookup with Get-Credential fallback.'
+            ReleaseNotes = 'Adds dual credential providers (CredentialManager/cmdkey), explicit credential ref management APIs, and structured ref testing.'
         }
     }
 }

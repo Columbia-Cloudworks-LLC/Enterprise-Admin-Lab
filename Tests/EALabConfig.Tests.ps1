@@ -113,6 +113,50 @@ Describe 'Test-EALabConfig orchestration validation' {
         ($result.Errors.Field -contains 'vmDefinitions[0].guestConfiguration.domainJoin.credentialRef') | Should Be $true
     }
 
+    It 'accepts domainJoin enabled without credentialRef when inline domain admin is configured' {
+        $config = New-ValidLabConfigObject
+        $config | Add-Member -MemberType NoteProperty -Name credentials -Value ([PSCustomObject]@{
+            domainAdminUser = 'LAB\Administrator'
+            domainAdminPassword = 'LabPassw0rd!'
+        }) -Force
+        $memberVm = [PSCustomObject]@{
+            name = 'APP01'
+            role = 'MemberServer'
+            os = 'windowsServer2022'
+            generation = 2
+            secureBoot = $true
+            tpmEnabled = $false
+            hardware = [PSCustomObject]@{
+                cpuCount = 2
+                memoryMB = 2048
+                diskSizeGB = 60
+            }
+            network = 'LabInternal'
+            staticIP = '192.168.10.20'
+            count = 1
+            orchestration = [PSCustomObject]@{
+                phaseTag = 'member'
+                bootstrap = 'winrm'
+            }
+            guestConfiguration = [PSCustomObject]@{
+                domainJoin = [PSCustomObject]@{
+                    enabled = $true
+                    credentialRef = ''
+                }
+            }
+        }
+        $config.vmDefinitions += $memberVm
+        $config.vmDefinitions[1] | Add-Member -MemberType NoteProperty -Name guestConfiguration -Value ([PSCustomObject]@{
+            domainJoin = [PSCustomObject]@{
+                enabled = $true
+                credentialRef = ''
+            }
+        }) -Force
+
+        $result = Test-EALabConfig -Config $config
+        $result.IsValid | Should Be $true
+    }
+
     It 'rejects configurations without a newForest domain controller' {
         $config = New-ValidLabConfigObject
         $config.vmDefinitions[0] | Add-Member -MemberType NoteProperty -Name domainController -Value ([PSCustomObject]@{

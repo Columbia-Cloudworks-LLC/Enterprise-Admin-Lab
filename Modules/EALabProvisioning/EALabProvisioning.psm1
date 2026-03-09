@@ -670,12 +670,16 @@ function Get-EALabVmExecutionPlan {
             }
 
             $domainJoinEnabled = $false
+            $domainJoinCredentialRef = ''
             if ($vmDef.PSObject.Properties.Name -contains 'guestConfiguration' -and
                 $null -ne $vmDef.guestConfiguration -and
                 $vmDef.guestConfiguration.PSObject.Properties.Name -contains 'domainJoin' -and
                 $null -ne $vmDef.guestConfiguration.domainJoin -and
                 $vmDef.guestConfiguration.domainJoin.enabled -eq $true) {
                 $domainJoinEnabled = $true
+                if ($vmDef.guestConfiguration.domainJoin.PSObject.Properties.Name -contains 'credentialRef') {
+                    $domainJoinCredentialRef = [string]$vmDef.guestConfiguration.domainJoin.credentialRef
+                }
             }
 
             $plan.Add([PSCustomObject]@{
@@ -685,11 +689,117 @@ function Get-EALabVmExecutionPlan {
                 IsDomainController = $isDc
                 DeploymentType    = $deploymentType
                 DomainJoinEnabled = $domainJoinEnabled
+                DomainJoinCredentialRef = $domainJoinCredentialRef
                 IsWindows         = ([string]$vmDef.os -like 'windows*')
             })
         }
     }
     return @($plan.ToArray())
+}
+
+function Get-EALabRequiredCredentialRefs {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [PSCustomObject]$Context,
+
+        [Parameter(Mandatory = $true)]
+        [PSCustomObject[]]$VmExecutionPlan
+    )
+
+    $refs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $credentialConfig = if ($null -ne $Context.Config.credentials) { $Context.Config.credentials } else { [PSCustomObject]@{} }
+    $inlineLocalAdminUser = if ($credentialConfig.PSObject.Properties.Name -contains 'localAdminUser') { [string]$credentialConfig.localAdminUser } else { '' }
+    $inlineLocalAdminPassword = if ($credentialConfig.PSObject.Properties.Name -contains 'localAdminPassword') { [string]$credentialConfig.localAdminPassword } else { '' }
+    $inlineDomainAdminUser = if ($credentialConfig.PSObject.Properties.Name -contains 'domainAdminUser') { [string]$credentialConfig.domainAdminUser } else { '' }
+    $inlineDomainAdminPassword = if ($credentialConfig.PSObject.Properties.Name -contains 'domainAdminPassword') { [string]$credentialConfig.domainAdminPassword } else { '' }
+    $inlineDsrmPassword = if ($credentialConfig.PSObject.Properties.Name -contains 'dsrmPassword') { [string]$credentialConfig.dsrmPassword } else { '' }
+    $hasInlineLocalAdmin = (-not [string]::IsNullOrWhiteSpace($inlineLocalAdminUser) -and -not [string]::IsNullOrWhiteSpace($inlineLocalAdminPassword))
+    $hasInlineDomainAdmin = (-not [string]::IsNullOrWhiteSpace($inlineDomainAdminUser) -and -not [string]::IsNullOrWhiteSpace($inlineDomainAdminPassword))
+    $hasInlineDsrm = (-not [string]::IsNullOrWhiteSpace($inlineDsrmPassword))
+
+    $globalRefSpecs = @(
+        @{ RefField = 'localAdminRef'; HasInline = $hasInlineLocalAdmin },
+        @{ RefField = 'domainAdminRef'; HasInline = $hasInlineDomainAdmin },
+        @{ RefField = 'dsrmRef'; HasInline = $hasInlineDsrm }
+    )
+    foreach ($spec in $globalRefSpecs) {
+        if ($spec.HasInline) {
+            continue
+        }
+
+        $field = [string]$spec.RefField
+        if ($credentialConfig.PSObject.Properties.Name -contains $field) {
+            $value = [string]$credentialConfig.$field
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                [void]$refs.Add($value)
+            }
+        }
+    }
+
+    foreach ($vmRuntime in @($VmExecutionPlan | Where-Object { $_.DomainJoinEnabled })) {
+        if ($hasInlineDomainAdmin) {
+            continue
+        }
+
+        $ref = [string]$vmRuntime.DomainJoinCredentialRef
+        if (-not [string]::IsNullOrWhiteSpace($ref)) {
+            [void]$refs.Add($ref)
+        }
+    }
+
+    $collectedRefs = @()
+    foreach ($item in $refs) {
+        $collectedRefs += [string]$item
+    }
+    return @($collectedRefs | Sort-Object)
+}
+
+function Resolve-EALabCredentialRefs {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', '', Justification = 'CredentialRefs are lookup keys, not secret values.')]
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$CredentialRefs
+    )
+
+    $resolvedByRef = @{}
+    $missing = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($ref in @($CredentialRefs)) {
+        if ([string]::IsNullOrWhiteSpace($ref)) {
+            continue
+        }
+
+        $health = Test-EALabCredentialRef -CredentialRef $ref
+        if (-not [bool]$health.Exists) {
+            [void]$missing.Add([PSCustomObject]@{
+                Ref      = $ref
+                Provider = ''
+                Message  = 'Credential reference was not found in supported providers.'
+            })
+            continue
+        }
+
+        $credential = Resolve-EALabCredentialRef -CredentialRef $ref
+        if ($null -eq $credential) {
+            [void]$missing.Add([PSCustomObject]@{
+                Ref      = $ref
+                Provider = [string]$health.Provider
+                Message  = 'Credential exists but is not readable with username/password.'
+            })
+            continue
+        }
+
+        $resolvedByRef[$ref] = $credential
+    }
+
+    return [PSCustomObject]@{
+        ResolvedByRef = $resolvedByRef
+        Missing       = @($missing.ToArray())
+    }
 }
 
 function Invoke-EALabAnsiblePlaybook {
@@ -809,9 +919,22 @@ function New-EALabEnvironment {
             $failedSummary = ($failedChecks | ForEach-Object { "$($_.Name): $($_.Message)" }) -join '; '
             throw "Provisioning prerequisites failed. $failedSummary"
         }
+        $vmExecutionPlan = @(Get-EALabVmExecutionPlan -Context $context)
+        $requiredCredentialRefs = @(Get-EALabRequiredCredentialRefs -Context $context -VmExecutionPlan $vmExecutionPlan)
+        $resolvedCredentialRefs = @{}
+        if ($requiredCredentialRefs.Count -gt 0) {
+            $credentialResolution = Resolve-EALabCredentialRefs -CredentialRefs $requiredCredentialRefs
+            $resolvedCredentialRefs = $credentialResolution.ResolvedByRef
+            $missingRefs = @($credentialResolution.Missing)
+            if ($missingRefs.Count -gt 0) {
+                $missingList = ($missingRefs | ForEach-Object { [string]$_.Ref } | Sort-Object -Unique) -join ', '
+                throw "Provisioning credential preflight failed. Missing or unreadable credential refs: $missingList. Configure these refs in Windows Credential Manager, or provide inline credentials.*User/*Password in the lab config before launching non-interactive provisioning."
+            }
+        }
+
         $credentialSet = Get-EALabCredentialSet -Config $context.Config -AllowPrompt
-        Write-Debug ("Credential availability: LocalAdmin={0}, DomainAdmin={1}, Dsrm={2}." -f `
-                ($null -ne $credentialSet.LocalAdmin), ($null -ne $credentialSet.DomainAdmin), ($null -ne $credentialSet.Dsrm))
+        Write-Debug ("Credential availability: LocalAdmin={0}, DomainAdmin={1}, Dsrm={2}; RequiredRefs={3}." -f `
+                ($null -ne $credentialSet.LocalAdmin), ($null -ne $credentialSet.DomainAdmin), ($null -ne $credentialSet.Dsrm), $requiredCredentialRefs.Count)
 
         Invoke-EALabProvisionStage -Context $context -Stage 'Networks' -Message 'Ensuring networks.' -Action {
             foreach ($network in @($context.Config.networks)) {
@@ -852,6 +975,15 @@ function New-EALabEnvironment {
                 $vmPath = Join-Path (Join-Path $context.LabRoot 'VMs') $vmName
                 $vhdPath = Join-Path (Join-Path $context.LabRoot 'Disks') "$vmName.vhdx"
                 Initialize-EALabDirectory -Path $vmPath
+                if (Test-Path -LiteralPath $vhdPath) {
+                    if ($Force) {
+                        Write-EALabLog -Context $context -Level WARN -Message "Disk '$vhdPath' already exists. Removing because -Force was provided."
+                        Remove-Item -LiteralPath $vhdPath -Force -ErrorAction Stop
+                    }
+                    else {
+                        throw "Disk '$vhdPath' already exists. Re-run create with -Force, or run destroy/cleanup first."
+                    }
+                }
 
                 $createMessage = "Create VM '$vmName'"
                 if ($PSCmdlet.ShouldProcess($vmName, $createMessage)) {
@@ -895,7 +1027,6 @@ function New-EALabEnvironment {
             }
         }
 
-        $vmExecutionPlan = @(Get-EALabVmExecutionPlan -Context $context)
         $ansibleContext = $null
         if ($StartVMs) {
             $localAdminCredential = $credentialSet.LocalAdmin
@@ -967,8 +1098,18 @@ function New-EALabEnvironment {
             if ($joinTargets.Count -gt 0) {
                 Invoke-EALabProvisionStage -Context $context -Stage 'DomainJoin' -Message 'Joining member servers and clients to domain.' -Action {
                     foreach ($joinVm in $joinTargets) {
+                        $joinCredential = $null
+                        $joinCredentialRef = [string]$joinVm.DomainJoinCredentialRef
+                        if (-not [string]::IsNullOrWhiteSpace($joinCredentialRef) -and $resolvedCredentialRefs.ContainsKey($joinCredentialRef)) {
+                            $joinCredential = $resolvedCredentialRefs[$joinCredentialRef]
+                        }
+
+                        if ($null -eq $joinCredential) {
+                            $joinCredential = if ($null -ne $domainAdminCredential) { $domainAdminCredential } else { $localAdminCredential }
+                        }
+
                         Update-EALabVmProgress -Context $context -VmName $joinVm.Name -Phase 'DomainJoin' -Message "Joining $($joinVm.Name) to domain."
-                        Join-EALabMachineToDomain -Context $context -VmRuntime $joinVm -DomainAdminCredential $domainAdminCredential -LocalAdminCredential $localAdminCredential
+                        Join-EALabMachineToDomain -Context $context -VmRuntime $joinVm -DomainAdminCredential $joinCredential -LocalAdminCredential $localAdminCredential
                         Update-EALabVmProgress -Context $context -VmName $joinVm.Name -Phase 'DomainJoined' -Message "$($joinVm.Name) joined to domain." -Status 'Succeeded'
                     }
                 }

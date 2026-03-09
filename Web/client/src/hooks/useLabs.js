@@ -111,7 +111,9 @@ async function readJsonOrThrow(res, fallbackMessage) {
 
   if (!res.ok) {
     const message = payload.error || payload.message || fallbackMessage || `Request failed: ${res.status}`;
-    throw new Error(message);
+    const error = new Error(message);
+    error.details = payload;
+    throw error;
   }
   return payload;
 }
@@ -137,6 +139,28 @@ export async function destroyLabEnvironment(name, { deleteLabData = false } = {}
 export async function fetchLabStatus(name) {
   const res = await fetch(`${API}/labs/${encodeURIComponent(name)}/status`);
   return readJsonOrThrow(res, 'Failed to fetch lab status');
+}
+
+export async function testCredentialRefs(refs) {
+  const normalizedRefs = Array.isArray(refs) ? refs.map((value) => String(value || '').trim()).filter(Boolean) : [];
+  const params = new URLSearchParams();
+  params.set('refs', normalizedRefs.join(','));
+  const res = await fetch(`${API}/credentials/status?${params.toString()}`);
+  return readJsonOrThrow(res, 'Failed to validate credential refs');
+}
+
+export async function setCredentialRef({ target, username, password, provider = 'Auto' }) {
+  const res = await fetch(`${API}/credentials`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      target,
+      username,
+      password,
+      provider,
+    }),
+  });
+  return readJsonOrThrow(res, 'Failed to set credential ref');
 }
 
 export async function fetchDefaults() {

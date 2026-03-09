@@ -29,11 +29,12 @@ Describe 'EALabCredentials resolution' {
         }
 
         It 'does not prompt for optional credentials when refs are empty' {
-            $securePassword = ConvertTo-SecureString -String 'P@ssw0rd!' -AsPlainText -Force
-            $localAdminCredential = [PSCredential]::new('lab\administrator', $securePassword)
             Mock -CommandName Get-EALabCredentialFromCredentialManager -MockWith {
-                return $localAdminCredential
+                $securePassword = ConvertTo-SecureString -String 'P@ssw0rd!' -AsPlainText -Force
+                return [PSCredential]::new('lab\administrator', $securePassword)
             }
+            Mock -CommandName Get-EALabCredentialFromCmdKey -MockWith { return $null }
+            Mock -CommandName Get-EALabCredentialFromWinCredNative -MockWith { return $null }
             Mock -CommandName Get-Credential -MockWith {
                 throw 'Get-Credential should not be called for optional blank references.'
             }
@@ -50,7 +51,61 @@ Describe 'EALabCredentials resolution' {
             $set.LocalAdmin.UserName | Should Be 'lab\administrator'
             $set.DomainAdmin | Should Be $null
             $set.Dsrm | Should Be $null
-            Assert-MockCalled -CommandName Get-Credential -Times 0 -Exactly
+            Assert-MockCalled -CommandName Get-Credential -Times 0 -Exactly -Scope It
+        }
+
+        It 'prefers CredentialManager resolution before cmdkey fallback' {
+            $securePassword = ConvertTo-SecureString -String 'P@ssw0rd!' -AsPlainText -Force
+            $credential = [PSCredential]::new('lab\administrator', $securePassword)
+            Mock -CommandName Get-EALabCredentialFromCredentialManager -MockWith { return $credential }
+            Mock -CommandName Get-EALabCredentialFromCmdKey -MockWith { throw 'cmdkey provider should not be called when primary succeeds.' }
+
+            $resolved = Resolve-EALabCredentialRef -CredentialRef 'ealab-local-admin'
+            $resolved.UserName | Should Be 'lab\administrator'
+            Assert-MockCalled -CommandName Get-EALabCredentialFromCredentialManager -Times 1 -Exactly -Scope It
+            Assert-MockCalled -CommandName Get-EALabCredentialFromCmdKey -Times 0 -Exactly -Scope It
+        }
+
+        It 'falls back to cmdkey provider when CredentialManager returns null' {
+            $securePassword = ConvertTo-SecureString -String 'P@ssw0rd!' -AsPlainText -Force
+            $credential = [PSCredential]::new('lab\administrator', $securePassword)
+            Mock -CommandName Get-EALabCredentialFromCredentialManager -MockWith { return $null }
+            Mock -CommandName Get-EALabCredentialFromCmdKey -MockWith { return $credential }
+
+            $resolved = Resolve-EALabCredentialRef -CredentialRef 'ealab-local-admin'
+            $resolved.UserName | Should Be 'lab\administrator'
+            Assert-MockCalled -CommandName Get-EALabCredentialFromCredentialManager -Times 1 -Exactly -Scope It
+            Assert-MockCalled -CommandName Get-EALabCredentialFromCmdKey -Times 1 -Exactly -Scope It
+        }
+
+        It 'returns missing status when credential ref does not resolve' {
+            Mock -CommandName Resolve-EALabCredentialRef -MockWith { return $null }
+
+            $status = Test-EALabCredentialRef -CredentialRef 'ealab-missing'
+            $status.Exists | Should Be $false
+            $status.Ref | Should Be 'ealab-missing'
+            $status.PasswordPresent | Should Be $false
+        }
+
+        It 'builds credentials from inline config when refs are empty' {
+            $config = [PSCustomObject]@{
+                credentials = [PSCustomObject]@{
+                    localAdminRef = ''
+                    domainAdminRef = ''
+                    dsrmRef = ''
+                    localAdminUser = 'Administrator'
+                    localAdminPassword = 'LabPassw0rd!'
+                    domainAdminUser = 'LAB\Administrator'
+                    domainAdminPassword = 'LabPassw0rd!'
+                    dsrmUser = 'DSRM'
+                    dsrmPassword = 'LabPassw0rd!'
+                }
+            }
+
+            $set = Get-EALabCredentialSet -Config $config -AllowPrompt:$false
+            $set.LocalAdmin.UserName | Should Be 'Administrator'
+            $set.DomainAdmin.UserName | Should Be 'LAB\Administrator'
+            $set.Dsrm.UserName | Should Be 'DSRM'
         }
     }
 }

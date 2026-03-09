@@ -86,6 +86,7 @@ Describe 'EALabProvisioning internal orchestration helpers' {
                             guestConfiguration = [PSCustomObject]@{
                                 domainJoin = [PSCustomObject]@{
                                     enabled = $true
+                                    credentialRef = 'ealab-domain-admin'
                                 }
                             }
                         }
@@ -97,6 +98,60 @@ Describe 'EALabProvisioning internal orchestration helpers' {
             $plan.Count | Should Be 2
             ($plan | Where-Object { $_.Name -eq 'DC01' }).IsDomainController | Should Be $true
             ($plan | Where-Object { $_.Name -eq 'APP01' }).DomainJoinEnabled | Should Be $true
+            ($plan | Where-Object { $_.Name -eq 'APP01' }).DomainJoinCredentialRef | Should Be 'ealab-domain-admin'
+        }
+
+        It 'collects required credential refs from global and VM domain join settings' {
+            $context = [PSCustomObject]@{
+                Config = [PSCustomObject]@{
+                    credentials = [PSCustomObject]@{
+                        localAdminRef = 'ealab-local-admin'
+                        domainAdminRef = 'ealab-domain-admin'
+                        dsrmRef = 'ealab-dsrm'
+                    }
+                    vmDefinitions = @(
+                        [PSCustomObject]@{
+                            name = 'APP01'
+                            role = 'MemberServer'
+                            os = 'windowsServer2022'
+                            count = 1
+                            guestConfiguration = [PSCustomObject]@{
+                                domainJoin = [PSCustomObject]@{
+                                    enabled = $true
+                                    credentialRef = 'ealab-app-join'
+                                }
+                            }
+                        }
+                    )
+                }
+            }
+
+            $plan = Get-EALabVmExecutionPlan -Context $context
+            $refs = @(Get-EALabRequiredCredentialRefs -Context $context -VmExecutionPlan $plan)
+            $refs -contains 'ealab-local-admin' | Should Be $true
+            $refs -contains 'ealab-domain-admin' | Should Be $true
+            $refs -contains 'ealab-dsrm' | Should Be $true
+            $refs -contains 'ealab-app-join' | Should Be $true
+            $refs.Count | Should Be 4
+        }
+
+        It 'reports unresolved refs during credential preflight aggregation' {
+            Mock -CommandName Test-EALabCredentialRef -ParameterFilter { $CredentialRef -eq 'missing-ref' } -MockWith {
+                return [PSCustomObject]@{ Ref = 'missing-ref'; Exists = $false; Provider = '' }
+            }
+            Mock -CommandName Test-EALabCredentialRef -ParameterFilter { $CredentialRef -ne 'missing-ref' } -MockWith {
+                return [PSCustomObject]@{ Ref = 'good-ref'; Exists = $true; Provider = 'CredentialManager' }
+            }
+            Mock -CommandName Resolve-EALabCredentialRef -MockWith {
+                $secure = ConvertTo-SecureString -String 'P@ssw0rd!' -AsPlainText -Force
+                return [PSCredential]::new('lab\administrator', $secure)
+            }
+
+            $result = Resolve-EALabCredentialRefs -CredentialRefs @('good-ref', 'missing-ref')
+            $result.ResolvedByRef.ContainsKey('good-ref') | Should Be $true
+            $result.ResolvedByRef.ContainsKey('missing-ref') | Should Be $false
+            $result.Missing.Count | Should Be 1
+            $result.Missing[0].Ref | Should Be 'missing-ref'
         }
 
         It 'mirrors INFO log messages to verbose and debug streams' {

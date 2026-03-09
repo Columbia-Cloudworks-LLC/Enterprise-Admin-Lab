@@ -31,6 +31,10 @@
     Runs prerequisite checks and validates the system environment.
     Outputs results to the console without opening the GUI.
 
+.PARAMETER RemediatePrerequisite
+    Executes remediation for a specific prerequisite check by name.
+    Requires -PrerequisiteName.
+
 .PARAMETER Status
     Returns the current lifecycle and VM status for a configured lab.
     Requires -LabName.
@@ -38,6 +42,10 @@
 .PARAMETER LabName
     The name of a specific lab to operate on.
     Required for -Create, -Destroy, and -Status actions.
+
+.PARAMETER PrerequisiteName
+    Name of the prerequisite check to remediate.
+    Required for -RemediatePrerequisite.
 
 .PARAMETER ConfigPath
     Path to a custom JSON configuration file.
@@ -58,6 +66,10 @@
 .EXAMPLE
     .\Invoke-EALab.ps1 -Validate
     Runs all prerequisite checks and outputs a results table.
+
+.EXAMPLE
+    .\Invoke-EALab.ps1 -RemediatePrerequisite -PrerequisiteName 'Terraform CLI'
+    Attempts to install/fix the named prerequisite using built-in remediation logic.
 
 .EXAMPLE
     .\Invoke-EALab.ps1 -Create -LabName 'TestLab01'
@@ -101,6 +113,9 @@ param(
     [Parameter(ParameterSetName = 'Validate', Mandatory = $true)]
     [switch]$Validate,
 
+    [Parameter(ParameterSetName = 'RemediatePrerequisite', Mandatory = $true)]
+    [switch]$RemediatePrerequisite,
+
     [Parameter(ParameterSetName = 'Status', Mandatory = $true)]
     [switch]$Status,
 
@@ -115,6 +130,13 @@ param(
 
     [Parameter(ParameterSetName = 'Create')]
     [switch]$SkipOrchestration,
+
+    [Parameter(ParameterSetName = 'Create')]
+    [switch]$Force,
+
+    [Parameter(ParameterSetName = 'RemediatePrerequisite', Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$PrerequisiteName,
 
     [Parameter(Mandatory = $false)]
     [ValidateNotNullOrEmpty()]
@@ -307,7 +329,7 @@ try {
         }
 
         'Create' {
-            Write-Debug "Create selected for lab '$LabName' (SkipOrchestration=$SkipOrchestration)."
+            Write-Debug "Create selected for lab '$LabName' (SkipOrchestration=$SkipOrchestration, Force=$Force)."
             if (-not $isAdmin) {
                 Write-Error "The -Create action requires an elevated (Run as Administrator) session."
                 exit 1
@@ -318,7 +340,7 @@ try {
             Write-Host '  ======================================' -ForegroundColor Cyan
             Write-Host ''
 
-            $result = New-EALabEnvironment -LabName $LabName -SkipOrchestration:$SkipOrchestration -ErrorAction Stop
+            $result = New-EALabEnvironment -LabName $LabName -Force:$Force -SkipOrchestration:$SkipOrchestration -ErrorAction Stop
             Write-Debug "Create completed. Status=$($result.Status); VMCount=$(@($result.VMs).Count); LogFile=$($result.LogFile)"
             Write-Host "[OK] $($result.Message)" -ForegroundColor Green
             if ($result.VMs.Count -gt 0) {
@@ -327,6 +349,35 @@ try {
             if (-not [string]::IsNullOrWhiteSpace([string]$result.AnsibleLog)) {
                 Write-Host "[INFO] Ansible log: $($result.AnsibleLog)" -ForegroundColor Cyan
             }
+        }
+
+        'RemediatePrerequisite' {
+            Write-Debug "RemediatePrerequisite selected for '$PrerequisiteName'."
+
+            if (-not $isAdmin) {
+                Write-Error "The -RemediatePrerequisite action requires an elevated (Run as Administrator) session."
+                exit 1
+            }
+
+            $results = Test-EALabPrerequisites
+            $target = $results | Where-Object { $_.Name -eq $PrerequisiteName } | Select-Object -First 1
+            if ($null -eq $target) {
+                Write-Error "Unknown prerequisite '$PrerequisiteName'."
+                exit 1
+            }
+
+            if ($target.Status -eq 'Passed') {
+                Write-Host "[OK] Prerequisite '$PrerequisiteName' is already satisfied." -ForegroundColor Green
+                exit 0
+            }
+
+            $ok = Install-EALabPrerequisite -PrerequisiteResult $target
+            if (-not $ok) {
+                Write-Error "No remediation was executed for '$PrerequisiteName'."
+                exit 1
+            }
+
+            Write-Host "[OK] Remediation executed for '$PrerequisiteName'." -ForegroundColor Green
         }
 
         'Destroy' {

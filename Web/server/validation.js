@@ -293,10 +293,11 @@ export function validateLabConfig(config) {
           }
         }
 
-        if (guest.domainJoin?.enabled === true && !guest.domainJoin?.credentialRef) {
+        const hasInlineDomainAdmin = !!(config.credentials?.domainAdminUser && config.credentials?.domainAdminPassword);
+        if (guest.domainJoin?.enabled === true && !guest.domainJoin?.credentialRef && !hasInlineDomainAdmin) {
           errors.push({
             field: `${prefix}.guestConfiguration.domainJoin.credentialRef`,
-            message: 'credentialRef is required when domainJoin.enabled is true',
+            message: 'credentialRef is required when domainJoin.enabled is true unless credentials.domainAdminUser/domainAdminPassword are set',
           });
         }
         if (guest.domainJoin?.enabled === true && isDomainController) {
@@ -380,6 +381,21 @@ export function validateLabConfig(config) {
         errors.push({
           field: `credentials.${fieldName}`,
           message: `${fieldName} must be at least 3 characters when provided`,
+        });
+      }
+    });
+
+    const inlinePairs = [
+      ['localAdminUser', 'localAdminPassword'],
+      ['domainAdminUser', 'domainAdminPassword'],
+    ];
+    inlinePairs.forEach(([userField, passwordField]) => {
+      const hasUser = !!String(config.credentials[userField] || '').trim();
+      const hasPassword = !!String(config.credentials[passwordField] || '').trim();
+      if (hasUser !== hasPassword) {
+        errors.push({
+          field: `credentials.${userField}`,
+          message: `${userField} and ${passwordField} must be provided together when using inline credentials`,
         });
       }
     });

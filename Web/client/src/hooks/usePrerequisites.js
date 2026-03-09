@@ -82,5 +82,23 @@ export function usePrerequisites() {
     });
   }, []);
 
-  return { checks, loading, error, runCheck };
+  const remediateCheck = useCallback(async (name) => {
+    const res = await fetch('/api/prerequisites/remediate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name }),
+    });
+
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const details = payload?.details ? ` ${payload.details}` : '';
+      throw new Error(`${payload?.error || `Failed to remediate '${name}'.`}${details}`);
+    }
+
+    return payload;
+  }, []);
+
+  return { checks, loading, error, runCheck, remediateCheck };
 }

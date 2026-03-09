@@ -13,7 +13,8 @@ PowerShell-based toolset for defining, spinning up, and tearing down Hyper-V Act
 - Local administrator rights
 - Node.js 20 LTS — [nodejs.org](https://nodejs.org/)
 - 16 GB RAM (recommended minimum for lab VMs)
-- Windows Server / client VHDX base images on local storage
+- Windows Server / client ISO media on local storage
+- Windows ADK Deployment Tools (`oscdimg.exe`) for unattended install media generation
 
 ---
 
@@ -46,20 +47,21 @@ The web UI opens at `http://localhost:47173` in your default browser.
 All operations go through `Invoke-EALab.ps1`:
 
 | Switch | Description |
-|---|---|
+| --- | --- |
 | *(default / `-OpenWebUI`)* | Start Node.js + React web app and open browser |
-| `-Validate` | Run prerequisite checks (Hyper-V, RAM, disk, modules) |
+| `-Validate` | Run prerequisite checks (system, Hyper-V, modules, provisioning tools) |
+| `-RemediatePrerequisite -PrerequisiteName <name>` | Execute remediation for a specific prerequisite check |
 | `-List` | List lab JSON configs in `Labs/` |
 | `-Create -LabName <name>` | Provision Hyper-V and guest/domain orchestration |
 | `-Destroy -LabName <name>` | Remove lab VM resources |
 | `-Status -LabName <name>` | Return lifecycle + per-VM orchestration progress |
-| `-ConfigPath <path>` | Override the default `Labs/` directory |
+| `-ConfigPath <path>` | Override the default global config path (`Config/defaults.json`) |
 
 ---
 
 ## Architecture
 
-```
+```tree
 enterprise-admin-lab/
 ├── Invoke-EALab.ps1            # Single entry point
 ├── PRD.md                      # Full product requirements document
@@ -71,7 +73,7 @@ enterprise-admin-lab/
 │       └── basic-ad-lab.json   # Starter template
 ├── Modules/
 │   ├── EALabConfig/            # JSON config CRUD (read/write/delete labs + defaults)
-│   └── EALabPrerequisites/     # System validation (Hyper-V, RAM, disk, modules)
+│   ├── EALabPrerequisites/     # System/provisioning validation + remediation helpers
 │   ├── EALabProvisioning/      # Hyper-V create/destroy/status lifecycle + orchestration
 │   ├── EALabCredentials/       # Credential reference resolution (Credential Manager/prompt)
 │   ├── EALabUnattend/          # Per-VM unattend generation and install media wiring
@@ -84,7 +86,7 @@ enterprise-admin-lab/
     │       ├── labs.js         # GET/POST/PUT/DELETE /api/labs
     │       ├── defaults.js     # GET /api/defaults
     │       ├── schema.js       # GET /api/schema
-    │       └── prerequisites.js # POST /api/prerequisites
+    │       └── prerequisites.js # GET /api/prerequisites/{checks,stream,/} + POST /api/prerequisites/remediate
     └── client/                 # Vite + React (port 47173)
         └── src/
             └── components/
@@ -104,12 +106,12 @@ Labs are stored as JSON files in `Labs/`. The schema is defined in `Config/lab-s
 {
   "metadata": {
     "name": "gpo-test-01",
-    "displayName": "GPO Test Lab 01",
-    "version": "1.0"
+    "displayName": "GPO Test Lab 01"
   },
   "domain": {
     "fqdn": "lab.local",
-    "netbiosName": "LAB"
+    "netbiosName": "LAB",
+    "functionalLevel": "Win2019"
   },
   "networks": [
     {
@@ -118,18 +120,33 @@ Labs are stored as JSON files in `Labs/`. The schema is defined in `Config/lab-s
       "subnet": "192.168.10.0/24"
     }
   ],
-  "vms": [
+  "baseImages": {
+    "windowsServer2022": {
+      "isoPath": "E:\\ISOs\\20348.169.210806-2348.fe_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso"
+    }
+  },
+  "vmDefinitions": [
     {
       "name": "DC01",
       "role": "DomainController",
-      "cpu": 2,
-      "ramMB": 2048,
-      "diskGB": 60,
+      "os": "windowsServer2022",
       "generation": 2,
-      "osImage": "E:\\BaseImages\\WS2022.vhdx",
+      "hardware": {
+        "cpuCount": 2,
+        "memoryMB": 4096,
+        "diskSizeGB": 80
+      },
       "network": "LabInternal"
     }
-  ]
+  ],
+  "globalHardwareDefaults": {
+    "cpuCount": 2,
+    "memoryMB": 2048,
+    "diskSizeGB": 60
+  },
+  "storage": {
+    "vmRootPath": "E:\\EALabs"
+  }
 }
 ```
 
@@ -138,8 +155,29 @@ Labs are stored as JSON files in `Labs/`. The schema is defined in `Config/lab-s
 ### Credential references
 
 - Lab configs should store credential reference keys under `credentials` (for example `localAdminRef`, `domainAdminRef`, `dsrmRef`), not plaintext passwords.
-- During `-Create`, the engine resolves references from Windows Credential Manager when available.
-- If a reference is not found, it falls back to `Get-Credential` interactive prompts.
+- During `-Create`, the engine resolves refs in this order: `CredentialManager` module -> `cmdkey`/native WinCred fallback -> interactive `Get-Credential` (only when interactive prompting is possible).
+- Web launches use a non-interactive PowerShell session, so missing refs fail fast during credential preflight before provisioning starts.
+- Domain join uses per-VM `guestConfiguration.domainJoin.credentialRef` first (when configured), then falls back to global `credentials.domainAdminRef`.
+- For ephemeral lab environments, configs can also include inline credential fields (`localAdminUser/localAdminPassword`, `domainAdminUser/domainAdminPassword`, `dsrmUser/dsrmPassword`) to allow one-click launches without Credential Manager.
+
+**PowerShell setup example (recommended):**
+
+```powershell
+Install-Module CredentialManager -Scope CurrentUser -Force
+Import-Module CredentialManager
+
+New-StoredCredential -Target 'ealab-local-admin' -UserName '.\Administrator' -Password '<password>' -Persist LocalMachine
+New-StoredCredential -Target 'ealab-domain-admin' -UserName 'CORP\Administrator' -Password '<password>' -Persist LocalMachine
+New-StoredCredential -Target 'ealab-dsrm' -UserName 'DSRM' -Password '<password>' -Persist LocalMachine
+```
+
+**Web/API credential operations:**
+
+- `GET /api/credentials/status?refs=ealab-local-admin,ealab-domain-admin`
+- `POST /api/credentials` with `{ target, username, password, provider }`
+- `DELETE /api/credentials/:ref`
+
+If launch fails with missing refs, the launch API returns a `missingCredentialRefs` array for UI remediation.
 
 ---
 
@@ -148,16 +186,21 @@ Labs are stored as JSON files in `Labs/`. The schema is defined in `Config/lab-s
 `.\Invoke-EALab.ps1 -Validate` (or the Prerequisites tab in the web UI) checks:
 
 | Check | Category | Requirement |
-|---|---|---|
-| Administrator elevation | System | Required |
-| Windows version | System | Windows 10 1903+ / Server 2016+ |
-| Hyper-V feature | Hyper-V | Must be enabled |
-| Available RAM | System | ≥ 16 GB recommended |
-| Disk space | Storage | ≥ 100 GB free recommended |
-| PowerShell modules | Modules | `Hyper-V` module available |
-| Virtual switch | Hyper-V | At least one Hyper-V adapter configured |
+| --- | --- | --- |
+| Administrator Elevation | System | Required |
+| PowerShell Version | System | 5.1+ |
+| Windows Edition | System | Hyper-V-capable edition |
+| Hyper-V Feature | Hyper-V | Must be enabled |
+| Hyper-V Management Tools | Hyper-V | Must be enabled |
+| Hyper-V PowerShell Module | Hyper-V | Required cmdlets available |
+| ImportExcel Module | Modules | Required for report exports |
+| Disk Space | Storage | Meets configured minimum |
+| Default vSwitch | Network | At least one vSwitch found |
+| Terraform CLI | Provisioning | Optional for current phase |
+| Docker Desktop | Provisioning | Optional for current phase |
+| Oscdimg Tool | Provisioning | Required for unattended ISO generation |
 
-Each check returns `Passed`, `Warning`, or `Failed` with a remediation hint.
+Each check returns `Passed`, `Warning`, or `Failed` with remediation hints. In the web UI, warning/failed checks include **Install** and **Docs** actions where remediation is supported.
 
 ---
 
@@ -186,6 +229,10 @@ $results = Test-EALabPrerequisites
 $results | Format-Table Name, Category, Status, Message -AutoSize
 
 Get-EALabPrerequisiteSummary  # Returns pass/warn/fail counts
+
+# Remediate a named prerequisite result object
+$target = $results | Where-Object Name -eq 'Oscdimg Tool' | Select-Object -First 1
+Install-EALabPrerequisite -PrerequisiteResult $target
 ```
 
 ---
@@ -205,7 +252,7 @@ The web app is the primary interface for lab configuration. See [`Web/README.md`
 ## Roadmap
 
 | Phase | Status | Scope |
-|---|---|---|
+| --- | --- | --- |
 | 1 | Complete | Entry script, module structure, config schema |
 | 2 | Complete | Web UI for lab configuration + prerequisite checking |
 | 3 | Complete | Hyper-V VM provisioning (`-Create` / `-Destroy`) |

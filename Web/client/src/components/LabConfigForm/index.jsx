@@ -7,11 +7,13 @@ import NetworksTab from './NetworksTab.jsx';
 import BaseImagesTab from './BaseImagesTab.jsx';
 import VMDefinitionsTab from './VMDefinitionsTab.jsx';
 import StorageTab from './StorageTab.jsx';
+import CredentialsTab from './CredentialsTab.jsx';
 import { validateLabConfig } from '../../validation.js';
 
 const TABS = [
   { id: 'general', label: 'General Info' },
   { id: 'domain', label: 'Domain Settings' },
+  { id: 'credentials', label: 'Credentials' },
   { id: 'networks', label: 'Networks' },
   { id: 'baseImages', label: 'Base Images' },
   { id: 'vmDefinitions', label: 'VM Definitions' },
@@ -85,6 +87,9 @@ export default function LabConfigForm({ mode }) {
       const parts = field.split('.');
       let obj = updated;
       for (let i = 0; i < parts.length - 1; i++) {
+        if (obj[parts[i]] === undefined || obj[parts[i]] === null) {
+          obj[parts[i]] = {};
+        }
         obj = obj[parts[i]];
       }
       obj[parts[parts.length - 1]] = value;
@@ -188,6 +193,9 @@ export default function LabConfigForm({ mode }) {
         )}
         {activeTab === 'domain' && (
           <DomainTab config={config} onChange={handleChange} errors={errors} />
+        )}
+        {activeTab === 'credentials' && (
+          <CredentialsTab config={config} onChange={handleChange} errors={errors} />
         )}
         {activeTab === 'networks' && (
           <NetworksTab config={config} onChange={handleChange} errors={errors} />

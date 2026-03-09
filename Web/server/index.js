@@ -10,6 +10,7 @@ import defaultsRouter from './routes/defaults.js';
 import schemaRouter from './routes/schema.js';
 import templatesRouter from './routes/templates.js';
 import prerequisitesRouter from './routes/prerequisites.js';
+import credentialsRouter from './routes/credentials.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -48,6 +49,7 @@ app.use('/api/defaults', defaultsRouter);
 app.use('/api/schema', schemaRouter);
 app.use('/api/templates', templatesRouter);
 app.use('/api/prerequisites', prerequisitesRouter);
+app.use('/api/credentials', credentialsRouter);
 
 // Health check endpoint — must be before static/wildcard
 app.get('/health', (req, res) => {

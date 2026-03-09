@@ -21,3 +21,13 @@ https://go.microsoft.com/fwlink/p/?LinkID=2195266&clcid=0x409&culture=en-us&coun
 ## Windows 10 Enterprise LTSC
 
 https://go.microsoft.com/fwlink/p/?LinkID=2195404&clcid=0x409&culture=en-us&country=US
+
+## Unattended Media Prerequisite (Oscdimg)
+
+Windows ADK (Deployment Tools) is required for unattended ISO generation used during provisioning:
+
+https://learn.microsoft.com/windows-hardware/get-started/adk-install
+
+After ADK installation, `oscdimg.exe` is typically located under:
+
+`C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg`

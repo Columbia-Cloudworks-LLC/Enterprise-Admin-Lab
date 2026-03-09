@@ -210,9 +210,24 @@ function New-EALabUnattendMedia {
     Copy-Item -LiteralPath $UnattendXmlPath -Destination (Join-Path $stagingPath 'Autounattend.xml') -Force -ErrorAction Stop
     $isoPath = Join-Path $OutputPath "$VmName-autounattend.iso"
 
+    $oscdimgPath = $null
     $oscdimg = Get-Command -Name 'oscdimg.exe' -ErrorAction SilentlyContinue
-    if ($null -eq $oscdimg) {
-        throw "oscdimg.exe was not found in PATH. Install Windows ADK or disable unattended media generation."
+    if ($null -ne $oscdimg) {
+        $oscdimgPath = [string]$oscdimg.Source
+    }
+    else {
+        $candidateExePaths = @(
+            'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\oscdimg.exe',
+            'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\x86\Oscdimg\oscdimg.exe'
+        )
+        $resolved = $candidateExePaths | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        if (-not [string]::IsNullOrWhiteSpace([string]$resolved)) {
+            $oscdimgPath = [string]$resolved
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$oscdimgPath)) {
+        throw "oscdimg.exe was not found. Install Windows ADK Deployment Tools."
     }
 
     $arguments = @(
@@ -222,7 +237,7 @@ function New-EALabUnattendMedia {
         $isoPath
     )
 
-    $process = Start-Process -FilePath $oscdimg.Source -ArgumentList $arguments -PassThru -NoNewWindow -Wait
+    $process = Start-Process -FilePath $oscdimgPath -ArgumentList $arguments -PassThru -NoNewWindow -Wait
     if ($process.ExitCode -ne 0) {
         throw "Failed to build unattended ISO for '$VmName'. oscdimg exit code: $($process.ExitCode)."
     }

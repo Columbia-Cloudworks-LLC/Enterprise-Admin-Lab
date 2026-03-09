@@ -19,9 +19,15 @@
     "safeModePassword": ""
   },
   "credentials": {
-    "localAdminRef": "ealab-local-admin",
-    "domainAdminRef": "ealab-domain-admin",
-    "dsrmRef": "ealab-dsrm"
+    "localAdminRef": "",
+    "domainAdminRef": "",
+    "dsrmRef": "",
+    "localAdminUser": "Administrator",
+    "localAdminPassword": "LabPassw0rd!",
+    "domainAdminUser": "CORP\\Administrator",
+    "domainAdminPassword": "LabPassw0rd!",
+    "dsrmUser": "DSRM",
+    "dsrmPassword": "LabPassw0rd!"
   },
   "guestDefaults": {
     "locale": "en-US",
@@ -194,7 +200,7 @@
         "domainJoin": {
           "enabled": true,
           "ouPath": "OU=Servers,DC=corp,DC=lab,DC=local",
-          "credentialRef": "ealab-domain-admin"
+          "credentialRef": ""
         },
         "tools": [
           "RSAT-AD-Tools"

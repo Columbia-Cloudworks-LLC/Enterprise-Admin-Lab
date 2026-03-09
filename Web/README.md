@@ -5,7 +5,8 @@ Modern Node.js + React web application for managing Hyper-V and Active Directory
 ## Features
 
 - **Lab Configuration**: CRUD operations for lab JSON configurations
-- **Prerequisites Check**: System validation with color-coded results
+- **Prerequisites Check**: Streaming system validation with color-coded results
+- **Prerequisite Remediation**: One-click install/remediation actions for supported checks
 - **Multi-tab Form**: Intuitive lab setup with 6 configuration sections
 - **Real-time Validation**: Client-side and server-side validation
 - **Responsive Design**: Works on desktop and tablet browsers
@@ -17,8 +18,8 @@ Modern Node.js + React web application for managing Hyper-V and Active Directory
 
 ## Installation
 
-```bash
-cd Scripts/enterprise-admin-lab/Web
+```powershell
+cd Web
 npm install
 ```
 
@@ -26,7 +27,7 @@ npm install
 
 Start both the Express backend (port 47001) and Vite dev server (port 47173) in parallel:
 
-```bash
+```powershell
 npm run dev
 ```
 
@@ -36,13 +37,13 @@ Open http://localhost:47173 in your browser.
 
 ## Production Build
 
-```bash
+```powershell
 npm run build
 ```
 
 Outputs optimized React app to `dist/`. Then run:
 
-```bash
+```powershell
 npm start
 ```
 
@@ -59,7 +60,7 @@ server/
     defaults.js           # GET /api/defaults
     schema.js             # GET /api/schema
     templates.js          # GET /api/templates, /api/templates/:name
-    prerequisites.js      # GET /api/prerequisites (shells out to PowerShell)
+    prerequisites.js      # GET /api/prerequisites* + POST /api/prerequisites/remediate
 
 client/
   src/
@@ -79,7 +80,7 @@ client/
       StatusBadge.jsx
     hooks/
       useLabs.js          # Lab CRUD API calls
-      usePrerequisites.js # Prerequisites check API call
+      usePrerequisites.js # Prerequisites check/remediation API calls
     validation.js         # Client-side validation rules
     styles/
       index.css           # Tailwind + custom CSS
@@ -115,7 +116,10 @@ Client-side routes in the React app are different from API routes:
 | GET | `/api/schema` | lab-schema.json |
 | GET | `/api/templates` | `[{name, displayName}]` |
 | GET | `/api/templates/:name` | template config |
-| GET | `/api/prerequisites` | `[{name, category, status, message}]` |
+| GET | `/api/prerequisites/checks` | static prerequisite check metadata |
+| GET | `/api/prerequisites/stream` | SSE stream for live prerequisite check updates |
+| GET | `/api/prerequisites` | merged prerequisite results |
+| POST | `/api/prerequisites/remediate` | `{ok, name, message}` or `{error, details}` |
 
 ## Validation Rules
 
@@ -143,13 +147,16 @@ The main `Invoke-EALab.ps1` script launches this web app:
 # Pure PowerShell validation (no Node.js needed)
 .\Invoke-EALab.ps1 -Validate
 
+# Run remediation for a specific prerequisite
+.\Invoke-EALab.ps1 -RemediatePrerequisite -PrerequisiteName "Oscdimg Tool"
+
 # List labs
 .\Invoke-EALab.ps1 -List
 ```
 
 ## Styling
 
-The app uses **Tailwind CSS** for utility-based styling with a custom colour scheme matching the original WinForms dashboard:
+The app uses **Tailwind CSS** for utility-based styling with a project-specific colour scheme:
 
 - Primary blue: `#007ACC` (header, links, buttons)
 - Sidebar dark: `#2D2D30` (nav background)
@@ -181,6 +188,12 @@ Kill the existing process or modify the port in `server/index.js` (Express) or `
 - Check that `Labs/` and `Config/` directories exist in the parent directory
 - Verify file permissions
 - Check the terminal for detailed error messages
+
+**Install button fails for remediation?**
+
+- Ensure the current session is elevated ("Run as Administrator")
+- Re-run `.\Invoke-EALab.ps1 -Validate` to confirm current state
+- For `Oscdimg Tool`, install Windows ADK Deployment Tools first, then retry remediation
 
 ## License
 

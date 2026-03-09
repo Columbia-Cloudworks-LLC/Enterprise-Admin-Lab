@@ -21,6 +21,7 @@ export const VM_OS_LABELS = {
 
 export function validateLabConfig(config) {
   const errors = [];
+  const hasInlineDomainAdmin = !!(config?.credentials?.domainAdminUser && config?.credentials?.domainAdminPassword);
 
   // metadata
   if (!config.metadata) {
@@ -186,6 +187,13 @@ export function validateLabConfig(config) {
       if (vm.staticIP && !IP_REGEX.test(vm.staticIP)) {
         errors.push({ field: `${prefix}.staticIP`, message: `'${vm.staticIP}' is not a valid IP address` });
       }
+
+      if (vm.guestConfiguration?.domainJoin?.enabled === true && !vm.guestConfiguration?.domainJoin?.credentialRef && !hasInlineDomainAdmin) {
+        errors.push({
+          field: `${prefix}.guestConfiguration.domainJoin.credentialRef`,
+          message: 'credentialRef is required when domainJoin.enabled is true unless credentials.domainAdminUser/domainAdminPassword are set',
+        });
+      }
     });
 
     if (!hasDomainController) {
@@ -208,6 +216,33 @@ export function validateLabConfig(config) {
     if (diskSizeGB !== undefined && (diskSizeGB < 20 || diskSizeGB > 2000)) {
       errors.push({ field: 'globalHardwareDefaults.diskSizeGB', message: 'diskSizeGB is out of range (20-2000)' });
     }
+  }
+
+  if (config.credentials) {
+    ['localAdminRef', 'domainAdminRef', 'dsrmRef'].forEach((fieldName) => {
+      const value = config.credentials[fieldName];
+      if (value && String(value).trim().length < 3) {
+        errors.push({
+          field: `credentials.${fieldName}`,
+          message: `${fieldName} must be at least 3 characters when provided`,
+        });
+      }
+    });
+
+    const inlinePairs = [
+      ['localAdminUser', 'localAdminPassword'],
+      ['domainAdminUser', 'domainAdminPassword'],
+    ];
+    inlinePairs.forEach(([userField, passwordField]) => {
+      const hasUser = !!String(config.credentials[userField] || '').trim();
+      const hasPassword = !!String(config.credentials[passwordField] || '').trim();
+      if (hasUser !== hasPassword) {
+        errors.push({
+          field: `credentials.${userField}`,
+          message: `${userField} and ${passwordField} must be provided together when using inline credentials`,
+        });
+      }
+    });
   }
 
   return { isValid: errors.length === 0, errors };

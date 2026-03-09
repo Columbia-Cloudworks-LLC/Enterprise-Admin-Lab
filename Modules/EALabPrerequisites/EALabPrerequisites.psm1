@@ -360,7 +360,20 @@ function Test-TerraformCLI {
     }
     catch {
         return (New-PrereqResult -Name 'Terraform CLI' -Category 'Provisioning' -Status 'Warning' `
-            -Message 'Terraform CLI not found. Install from https://developer.hashicorp.com/terraform/downloads or via winget install Hashicorp.Terraform. (Not required for Phase 2.)')
+            -Message 'Terraform CLI not found. Install from https://developer.hashicorp.com/terraform/downloads or via winget install Hashicorp.Terraform. (Not required for Phase 2.)' `
+            -Remediation {
+                Write-Host '[INFO] Installing Terraform via winget...'
+                try {
+                    & winget install --id Hashicorp.Terraform --exact --accept-source-agreements --accept-package-agreements
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "winget exited with code $LASTEXITCODE"
+                    }
+                    Write-Host '[OK] Terraform installation completed.'
+                }
+                catch {
+                    throw "Failed to install Terraform: $($_.Exception.Message)"
+                }
+            })
     }
 }
 
@@ -384,7 +397,20 @@ function Test-DockerDesktop {
 
     if (-not $dockerInstalled) {
         return (New-PrereqResult -Name 'Docker Desktop' -Category 'Provisioning' -Status 'Warning' `
-            -Message 'Docker Desktop is not installed. Install from https://www.docker.com/products/docker-desktop or via winget install Docker.DockerDesktop. (Not required for Phase 2.)')
+            -Message 'Docker Desktop is not installed. Install from https://www.docker.com/products/docker-desktop or via winget install Docker.DockerDesktop. (Not required for Phase 2.)' `
+            -Remediation {
+                Write-Host '[INFO] Installing Docker Desktop via winget...'
+                try {
+                    & winget install --id Docker.DockerDesktop --exact --accept-source-agreements --accept-package-agreements
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "winget exited with code $LASTEXITCODE"
+                    }
+                    Write-Host '[OK] Docker Desktop installation completed.'
+                }
+                catch {
+                    throw "Failed to install Docker Desktop: $($_.Exception.Message)"
+                }
+            })
     }
 
     # Check if Docker service is running
@@ -402,6 +428,70 @@ function Test-DockerDesktop {
     catch {
         return (New-PrereqResult -Name 'Docker Desktop' -Category 'Provisioning' -Status 'Warning' `
             -Message 'Docker Desktop is installed but could not contact the Docker daemon. Ensure Docker Desktop is running. (Not required for Phase 2.)')
+    }
+}
+
+function Test-OscdimgTool {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param()
+
+    try {
+        $candidateExePaths = @(
+            'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\oscdimg.exe',
+            'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\x86\Oscdimg\oscdimg.exe'
+        )
+
+        $oscdimg = Get-Command -Name 'oscdimg.exe' -ErrorAction SilentlyContinue
+        if ($null -ne $oscdimg) {
+            return (New-PrereqResult -Name 'Oscdimg Tool' -Category 'Provisioning' -Status 'Passed' `
+                -Message "oscdimg.exe detected at '$($oscdimg.Source)'.")
+        }
+
+        $directPath = $candidateExePaths | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        if (-not [string]::IsNullOrWhiteSpace([string]$directPath)) {
+            return (New-PrereqResult -Name 'Oscdimg Tool' -Category 'Provisioning' -Status 'Passed' `
+                -Message "oscdimg.exe detected at '$directPath' (found via ADK install path).")
+        }
+
+        return (New-PrereqResult -Name 'Oscdimg Tool' -Category 'Provisioning' -Status 'Warning' `
+            -Message 'oscdimg.exe not found. Install Windows ADK with Deployment Tools. Required for unattended media generation during VM provisioning.' `
+            -Remediation {
+                $candidateExePaths = @(
+                    'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\oscdimg.exe',
+                    'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\x86\Oscdimg\oscdimg.exe'
+                )
+                $foundExe = $candidateExePaths | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+                if ([string]::IsNullOrWhiteSpace([string]$foundExe)) {
+                    throw 'Windows ADK Deployment Tools are not installed. Install ADK: https://learn.microsoft.com/windows-hardware/get-started/adk-install'
+                }
+
+                $foundPath = Split-Path -Path $foundExe -Parent
+                Write-Host "[INFO] Found oscdimg.exe at '$foundExe'."
+                $machinePath = [Environment]::GetEnvironmentVariable('Path', [EnvironmentVariableTarget]::Machine)
+                if ([string]::IsNullOrWhiteSpace([string]$machinePath)) {
+                    $machinePath = ''
+                }
+
+                if ($machinePath -notlike "*$foundPath*") {
+                    $newMachinePath = if ([string]::IsNullOrWhiteSpace($machinePath)) { $foundPath } else { "$machinePath;$foundPath" }
+                    [Environment]::SetEnvironmentVariable('Path', $newMachinePath, [EnvironmentVariableTarget]::Machine)
+                    Write-Host '[OK] Added Oscdimg directory to machine PATH.'
+                }
+                else {
+                    Write-Host '[INFO] Oscdimg directory already present in machine PATH.'
+                }
+
+                if ($env:Path -notlike "*$foundPath*") {
+                    $env:Path = "$env:Path;$foundPath"
+                }
+
+                Write-Host '[OK] Oscdimg remediation completed.'
+            })
+    }
+    catch {
+        return (New-PrereqResult -Name 'Oscdimg Tool' -Category 'Provisioning' -Status 'Warning' `
+            -Message "Could not validate oscdimg.exe availability: $($_.Exception.Message)")
     }
 }
 
@@ -698,6 +788,7 @@ function Test-EALabPrerequisites {
         { Test-DefaultVSwitch }
         { Test-TerraformCLI }
         { Test-DockerDesktop }
+        { Test-OscdimgTool }
     )
 
     $totalChecks = $checks.Count

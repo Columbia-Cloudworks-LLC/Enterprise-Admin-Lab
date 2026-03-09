@@ -5,7 +5,7 @@
 **Product Name:** Enterprise Admin Lab
 
 **Summary:**  
-Enterprise Admin Lab is a PowerShell‑based toolset that lets Windows Server admins define, spin up, and destroy small, fully scripted Hyper‑V AD labs on a Windows 11 Pro host using a configuration‑driven workflow. The product exposes a single PowerShell entry script and a GUI‑driven configuration manager (HTML + WinForms) for defining lab templates without requiring admins to learn Terraform/Ansible internals. [learn.microsoft](https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/powershell)
+Enterprise Admin Lab is a PowerShell‑based toolset that lets Windows Server admins define, spin up, and destroy small, fully scripted Hyper‑V AD labs on a Windows 11 Pro host using a configuration‑driven workflow. The product exposes a single PowerShell entry script and a Node.js + React web UI for defining lab templates without requiring admins to learn Terraform/Ansible internals. [learn.microsoft](https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/powershell)
 
 **Primary platform:**
 
@@ -41,8 +41,8 @@ Enterprise Admin Lab is a PowerShell‑based toolset that lets Windows Server ad
   - Lab creation.
   - Lab destruction.
   - Lab status and basic health checks.
-  - Launching the configuration manager GUI.
-- Let admins define lab templates entirely via GUI, then modify them later via GUI or direct config file edits.
+  - Launching the web configuration manager.
+- Let admins define lab templates entirely via web UI, then modify them later via web UI or direct config file edits.
 - Make all lab behavior driven by configuration files (no hard‑coded topology).
 - Avoid dependencies on external infrastructure (no mandatory Azure/AWS).
 
@@ -59,10 +59,10 @@ Enterprise Admin Lab is a PowerShell‑based toolset that lets Windows Server ad
 **Components:**
 
 1. **Entry script:** `Invoke-EALab.ps1`
-   - Single entry point with subcommands (or parameters) like `-Create`, `-Destroy`, `-List`, `-OpenConfigUI`.
-2. **Configuration manager GUI:**
-   - HTML‑based UI rendered via embedded browser control or IE/Edge COM object to host a form‑like GUI from PowerShell. [stackoverflow](https://stackoverflow.com/questions/5981905/use-html-form-as-gui-for-powershell)
-   - WinForms‑based GUI for native experience on the host (can be used instead of or in addition to HTML). [foxdeploy](https://www.foxdeploy.com/blog/creating-a-gui-natively-for-your-powershell-tools-using-net-methods)
+   - Single entry point with subcommands (or parameters) like `-Create`, `-Destroy`, `-List`, `-OpenWebUI`, and `-RemediatePrerequisite`.
+2. **Configuration manager web app:**
+   - React SPA frontend (Vite) for lab config CRUD and prerequisite workflows.
+   - Express API backend that shells out to `Invoke-EALab.ps1` for validation/provisioning operations.
 3. **Config store:**
    - Set of JSON/YAML files describing:
      - Lab definitions (topology, VM specs, roles).
@@ -93,8 +93,9 @@ Enterprise Admin Lab is a PowerShell‑based toolset that lets Windows Server ad
 - `Remove` / `-Destroy` – destroy all resources of a named lab.
 - `Get` / `-List` – list existing labs and their lifecycle state.
 - `-Status` – return lifecycle and per-VM orchestration progress for a lab.
-- `Config` / `-OpenConfigUI` – open the configuration manager GUI.
+- `-OpenWebUI` (or default action) – open the web configuration manager.
 - `Test` / `-Validate` – validate a lab config without creating resources.
+- `-RemediatePrerequisite -PrerequisiteName <name>` – execute a supported prerequisite remediation action.
 
 **FR‑3:** The script MUST accept:
 
@@ -130,23 +131,23 @@ Enterprise Admin Lab is a PowerShell‑based toolset that lets Windows Server ad
 
 **FR‑8:** All behavior (VM names, OU structure, installed roles) SHOULD be driven from config or Ansible, not hard‑coded in PowerShell.
 
-### 5.3 Configuration manager GUI
+### 5.3 Configuration manager web UI
 
-**FR‑9:** The product MUST provide a GUI for creating and editing lab configs.
+**FR‑9:** The product MUST provide a web UI for creating and editing lab configs.
 
-**FR‑10:** The GUI MUST be callable from:
+**FR‑10:** The web UI MUST be callable from:
 
-- Start menu shortcut (optional, v2).
-- `Invoke-EALab.ps1 -OpenConfigUI`.
+- `Invoke-EALab.ps1` (default action).
+- `Invoke-EALab.ps1 -OpenWebUI`.
 
-**FR‑11:** The GUI MUST allow:
+**FR‑11:** The web UI MUST allow:
 
 - Creating a new lab configuration.
 - Editing an existing lab configuration selected from a list.
 - Copying an existing config to use as a template.
 - Validating config before saving (basic checks: unique names, valid paths, plausible resource sizes).
 
-**FR‑12:** The GUI MUST expose the following fields at minimum:
+**FR‑12:** The web UI MUST expose the following fields at minimum:
 
 - Lab name, description.
 - Domain settings (FQDN, NetBIOS).
@@ -156,13 +157,13 @@ Enterprise Admin Lab is a PowerShell‑based toolset that lets Windows Server ad
 - Network definitions (subnet, switch selection, type).
 - Ansible options (enable/disable, controller specs).
 
-**FR‑13:** The GUI implementation:
+**FR‑13:** The web UI implementation:
 
-- MAY use WinForms for the main interactive UI. [bytecookie.wordpress](https://bytecookie.wordpress.com/2011/07/17/gui-creation-with-powershell-the-basics/)
-- MAY supplement with an HTML‑based UI hosted via browser control for more complex forms. [techtarget](https://www.techtarget.com/searchitoperations/tutorial/Boost-productivity-with-these-PowerShell-GUI-examples)
-- MUST separate GUI layout from business logic (e.g., dedicated functions for file IO and validation). [devblogs.microsoft](https://devblogs.microsoft.com/scripting/ive-got-a-powershell-secret-adding-a-gui-to-scripts/)
+- MUST provide an API-driven architecture where UI state is separated from provisioning business logic.
+- MUST support prerequisite validation with pass/warn/fail states.
+- SHOULD provide one-click remediation for supported prerequisite checks.
 
-**FR‑14:** Once a lab config is saved, admins MUST be able to use the entry script without reopening the GUI.
+**FR‑14:** Once a lab config is saved, admins MUST be able to use the entry script without reopening the web UI.
 
 ### 5.4 Lab lifecycle management
 
@@ -236,7 +237,7 @@ Running `-Create` with the same lab name and config MUST NOT duplicate resources
 
 **NFR‑5 – Usability:**  
 
-- The GUI MUST be usable by admins with no PowerShell scripting experience (clear labels, tooltips for advanced options). [blog.inedo](https://blog.inedo.com/powershell/gui)
+- The web UI MUST be usable by admins with no PowerShell scripting experience (clear labels, tooltips for advanced options).
 - CLI help (`Get-Help Invoke-EALab.ps1 -Detailed`) MUST document all parameters and include examples.
 
 ***
@@ -246,8 +247,8 @@ Running `-Create` with the same lab name and config MUST NOT duplicate resources
 ### 7.1 First‑time setup
 
 1. Admin installs repo (Git clone or ZIP).
-2. Admin runs `.\Invoke-EALab.ps1 -OpenConfigUI`.
-3. GUI prompts for:
+2. Admin runs `.\Invoke-EALab.ps1` (or `.\Invoke-EALab.ps1 -OpenWebUI`).
+3. Web UI prompts for:
    - Global defaults (base path, image locations).
    - First lab template (e.g., “SingleSite‑GPO‑Lab”).
 4. Admin saves lab definition.
@@ -260,7 +261,7 @@ Running `-Create` with the same lab name and config MUST NOT duplicate resources
   - Work in the lab from a jump box.
   - `.\Invoke-EALab.ps1 -Destroy -LabName GpoTest01`
 
-The GUI is only revisited to create/update templates.
+The web UI is only revisited to create/update templates.
 
 ***
 
@@ -279,6 +280,6 @@ The GUI is only revisited to create/update templates.
 - Support for exporting/importing labs between hosts.
 - Direct Terraform/Ansible config generation from the same UI (for hybrid scenarios).
 - Support for nested virtualization or Proxmox/VMware backends later.
-- Role‑based prebuilt “scenario packs” (e.g., security labs, DR drills) selectable from the GUI.
+- Role‑based prebuilt “scenario packs” (e.g., security labs, DR drills) selectable from the web UI.
 
 If you’d like, the next step can be a skeleton repo layout plus a rough `Invoke-EALab.ps1` parameter design and function breakdown that maps directly to this PRD.
