@@ -5,6 +5,82 @@
 
 Set-StrictMode -Version Latest
 
+function Get-EALabOscdimgCandidatePaths {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param()
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $baseRoots = @(
+        $env:ProgramFiles,
+        ${env:ProgramFiles(x86)}
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+
+    foreach ($baseRoot in $baseRoots) {
+        foreach ($kitsVersion in @('10', '11')) {
+            foreach ($arch in @('amd64', 'x86')) {
+                [void]$candidates.Add(
+                    (Join-Path $baseRoot "Windows Kits\$kitsVersion\Assessment and Deployment Kit\Deployment Tools\$arch\Oscdimg\oscdimg.exe")
+                )
+            }
+        }
+    }
+
+    foreach ($registryPath in @(
+            'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots'
+        )) {
+        if (-not (Test-Path -LiteralPath $registryPath)) {
+            continue
+        }
+
+        $roots = Get-ItemProperty -LiteralPath $registryPath -ErrorAction SilentlyContinue
+        if ($null -eq $roots) {
+            continue
+        }
+
+        foreach ($prop in $roots.PSObject.Properties) {
+            if ($prop.Name -notmatch '^KitsRoot\d+$') {
+                continue
+            }
+
+            $kitsRoot = [string]$prop.Value
+            if ([string]::IsNullOrWhiteSpace($kitsRoot)) {
+                continue
+            }
+
+            foreach ($arch in @('amd64', 'x86')) {
+                [void]$candidates.Add(
+                    (Join-Path $kitsRoot "Assessment and Deployment Kit\Deployment Tools\$arch\Oscdimg\oscdimg.exe")
+                )
+            }
+        }
+    }
+
+    return @($candidates | Select-Object -Unique)
+}
+
+function Get-EALabOscdimgPath {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    $oscdimg = Get-Command -Name 'oscdimg.exe' -ErrorAction SilentlyContinue
+    if ($null -ne $oscdimg -and -not [string]::IsNullOrWhiteSpace([string]$oscdimg.Source)) {
+        return [string]$oscdimg.Source
+    }
+
+    $resolved = Get-EALabOscdimgCandidatePaths |
+        Where-Object { Test-Path -LiteralPath $_ } |
+        Select-Object -First 1
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$resolved)) {
+        return [string]$resolved
+    }
+
+    return $null
+}
+
 function Initialize-EALabArtifactDirectory {
     [CmdletBinding()]
     [OutputType([string])]
@@ -68,26 +144,100 @@ function New-EALabVmUnattendXml {
 
     $adminUser = ''
     $adminPasswordPlain = ''
-    if ($null -ne $LocalAdminCredential) {
-        $adminUser = [string]$LocalAdminCredential.UserName
-        $adminPasswordPlain = [string]$LocalAdminCredential.GetNetworkCredential().Password
+    if ($null -eq $LocalAdminCredential) {
+        throw "A local admin credential is required to generate unattended setup for VM '$VmName'."
     }
 
-    $xmlContent = @"
-<?xml version="1.0" encoding="utf-8"?>
-<unattend xmlns="urn:schemas-microsoft-com:unattend">
-  <settings pass="windowsPE">
-    <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
-      <SetupUILanguage>
-        <UILanguage>$locale</UILanguage>
-      </SetupUILanguage>
-      <InputLocale>$locale</InputLocale>
-      <SystemLocale>$locale</SystemLocale>
-      <UILanguage>$locale</UILanguage>
-      <UILanguageFallback>$locale</UILanguageFallback>
-      <UserLocale>$locale</UserLocale>
-    </component>
-    <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+    $adminUser = [string]$LocalAdminCredential.UserName
+    $adminPasswordPlain = [string]$LocalAdminCredential.GetNetworkCredential().Password
+    if ([string]::IsNullOrWhiteSpace($adminUser) -or [string]::IsNullOrWhiteSpace($adminPasswordPlain)) {
+        throw "Local admin credential for VM '$VmName' is missing username or password."
+    }
+
+    $installImageName = if ($guestConfig.PSObject.Properties.Name -contains 'installImageName' -and -not [string]::IsNullOrWhiteSpace([string]$guestConfig.installImageName)) {
+        [string]$guestConfig.installImageName
+    } elseif ($guestDefaults.PSObject.Properties.Name -contains 'installImageName' -and -not [string]::IsNullOrWhiteSpace([string]$guestDefaults.installImageName)) {
+        [string]$guestDefaults.installImageName
+    } else {
+        ''
+    }
+
+    $installFromXml = @'
+          <InstallFrom>
+            <MetaData wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+              <Key>/IMAGE/INDEX</Key>
+              <Value>1</Value>
+            </MetaData>
+          </InstallFrom>
+'@
+    if (-not [string]::IsNullOrWhiteSpace($installImageName)) {
+        $installFromXml = @"
+          <InstallFrom>
+            <MetaData wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+              <Key>/IMAGE/NAME</Key>
+              <Value>$installImageName</Value>
+            </MetaData>
+          </InstallFrom>
+"@
+    }
+
+    $gen = if ($VmDefinition.PSObject.Properties.Name -contains 'generation' -and $null -ne $VmDefinition.generation) { [int]$VmDefinition.generation } else { 2 }
+    $isUefi = ($gen -eq 2)
+
+    if ($isUefi) {
+        $diskConfigXml = @'
+      <DiskConfiguration>
+        <WillShowUI>OnError</WillShowUI>
+        <Disk wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <DiskID>0</DiskID>
+          <WillWipeDisk>true</WillWipeDisk>
+          <CreatePartitions>
+            <CreatePartition wcm:action="add">
+              <Order>1</Order>
+              <Type>EFI</Type>
+              <Size>260</Size>
+            </CreatePartition>
+            <CreatePartition wcm:action="add">
+              <Order>2</Order>
+              <Type>MSR</Type>
+              <Size>128</Size>
+            </CreatePartition>
+            <CreatePartition wcm:action="add">
+              <Order>3</Order>
+              <Type>Primary</Type>
+              <Extend>true</Extend>
+            </CreatePartition>
+          </CreatePartitions>
+          <ModifyPartitions>
+            <ModifyPartition wcm:action="add">
+              <Order>1</Order>
+              <PartitionID>1</PartitionID>
+              <Format>FAT32</Format>
+              <Label>System</Label>
+            </ModifyPartition>
+            <ModifyPartition wcm:action="add">
+              <Order>2</Order>
+              <PartitionID>3</PartitionID>
+              <Format>NTFS</Format>
+              <Letter>C</Letter>
+              <Label>Windows</Label>
+            </ModifyPartition>
+          </ModifyPartitions>
+        </Disk>
+      </DiskConfiguration>
+      <ImageInstall>
+        <OSImage>
+__INSTALL_FROM__
+          <InstallTo>
+            <DiskID>0</DiskID>
+            <PartitionID>3</PartitionID>
+          </InstallTo>
+        </OSImage>
+      </ImageInstall>
+'@
+    }
+    else {
+        $diskConfigXml = @'
       <DiskConfiguration>
         <WillShowUI>OnError</WillShowUI>
         <Disk wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
@@ -124,12 +274,34 @@ function New-EALabVmUnattendXml {
       </DiskConfiguration>
       <ImageInstall>
         <OSImage>
+__INSTALL_FROM__
           <InstallTo>
             <DiskID>0</DiskID>
             <PartitionID>2</PartitionID>
           </InstallTo>
         </OSImage>
       </ImageInstall>
+'@
+    }
+
+    $diskConfigXml = $diskConfigXml.Replace('__INSTALL_FROM__', $installFromXml)
+
+    $xmlContent = @"
+<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <SetupUILanguage>
+        <UILanguage>$locale</UILanguage>
+      </SetupUILanguage>
+      <InputLocale>$locale</InputLocale>
+      <SystemLocale>$locale</SystemLocale>
+      <UILanguage>$locale</UILanguage>
+      <UILanguageFallback>$locale</UILanguageFallback>
+      <UserLocale>$locale</UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+$diskConfigXml
       <UserData>
         <AcceptEula>true</AcceptEula>
       </UserData>
@@ -151,6 +323,10 @@ function New-EALabVmUnattendXml {
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <OOBE>
         <HideEULAPage>true</HideEULAPage>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <SkipMachineOOBE>true</SkipMachineOOBE>
+        <SkipUserOOBE>true</SkipUserOOBE>
         <NetworkLocation>Work</NetworkLocation>
         <ProtectYourPC>3</ProtectYourPC>
       </OOBE>
@@ -198,33 +374,32 @@ function New-EALabUnattendMedia {
         [string]$OutputPath
     )
 
+    if (-not (Test-Path -LiteralPath $UnattendXmlPath -PathType Leaf)) {
+        throw "Unattend XML was not found at '$UnattendXmlPath'."
+    }
+
+    $unattendFile = Get-Item -LiteralPath $UnattendXmlPath -ErrorAction Stop
+    if ($unattendFile.Length -le 0) {
+        throw "Unattend XML at '$UnattendXmlPath' is empty."
+    }
+
     if (-not (Test-Path -LiteralPath $OutputPath)) {
         [void](New-Item -ItemType Directory -Path $OutputPath -Force -ErrorAction Stop)
     }
 
-    $stagingPath = Join-Path $OutputPath 'Autounattend'
-    if (-not (Test-Path -LiteralPath $stagingPath)) {
-        [void](New-Item -ItemType Directory -Path $stagingPath -Force -ErrorAction Stop)
+    $stagingPath = Join-Path $OutputPath ("Autounattend-{0}" -f $VmName)
+    if (Test-Path -LiteralPath $stagingPath) {
+        Remove-Item -LiteralPath $stagingPath -Recurse -Force -ErrorAction Stop
     }
+    [void](New-Item -ItemType Directory -Path $stagingPath -Force -ErrorAction Stop)
 
     Copy-Item -LiteralPath $UnattendXmlPath -Destination (Join-Path $stagingPath 'Autounattend.xml') -Force -ErrorAction Stop
     $isoPath = Join-Path $OutputPath "$VmName-autounattend.iso"
+    if (Test-Path -LiteralPath $isoPath -PathType Leaf) {
+        Remove-Item -LiteralPath $isoPath -Force -ErrorAction Stop
+    }
 
-    $oscdimgPath = $null
-    $oscdimg = Get-Command -Name 'oscdimg.exe' -ErrorAction SilentlyContinue
-    if ($null -ne $oscdimg) {
-        $oscdimgPath = [string]$oscdimg.Source
-    }
-    else {
-        $candidateExePaths = @(
-            'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\oscdimg.exe',
-            'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\x86\Oscdimg\oscdimg.exe'
-        )
-        $resolved = $candidateExePaths | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-        if (-not [string]::IsNullOrWhiteSpace([string]$resolved)) {
-            $oscdimgPath = [string]$resolved
-        }
-    }
+    $oscdimgPath = Get-EALabOscdimgPath
 
     if ([string]::IsNullOrWhiteSpace([string]$oscdimgPath)) {
         throw "oscdimg.exe was not found. Install Windows ADK Deployment Tools."
@@ -258,11 +433,13 @@ function Set-EALabVmInstallMedia {
         [string]$UnattendIsoPath
     )
 
-    $dvdDrives = @(Get-VMDvdDrive -VMName $VmName -ErrorAction SilentlyContinue)
+    $dvdDrives = @(Get-VMDvdDrive -VMName $VmName -ErrorAction SilentlyContinue |
+            Sort-Object ControllerNumber, ControllerLocation)
     if (-not [string]::IsNullOrWhiteSpace([string]$OsIsoPath)) {
         if ($dvdDrives.Count -eq 0) {
             Add-VMDvdDrive -VMName $VmName -Path $OsIsoPath -ErrorAction Stop | Out-Null
-            $dvdDrives = @(Get-VMDvdDrive -VMName $VmName -ErrorAction SilentlyContinue)
+            $dvdDrives = @(Get-VMDvdDrive -VMName $VmName -ErrorAction SilentlyContinue |
+                    Sort-Object ControllerNumber, ControllerLocation)
         } else {
             Set-VMDvdDrive -VMName $VmName -ControllerNumber $dvdDrives[0].ControllerNumber -ControllerLocation $dvdDrives[0].ControllerLocation -Path $OsIsoPath -ErrorAction Stop | Out-Null
         }
@@ -275,9 +452,40 @@ function Set-EALabVmInstallMedia {
             Set-VMDvdDrive -VMName $VmName -ControllerNumber $dvdDrives[1].ControllerNumber -ControllerLocation $dvdDrives[1].ControllerLocation -Path $UnattendIsoPath -ErrorAction Stop | Out-Null
         }
     }
+
+    $attachedDrives = @(Get-VMDvdDrive -VMName $VmName -ErrorAction Stop |
+            Sort-Object ControllerNumber, ControllerLocation)
+    $osDrive = $null
+    $unattendDrive = $null
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$OsIsoPath)) {
+        $osDrive = @($attachedDrives | Where-Object { [string]$_.Path -eq $OsIsoPath } | Select-Object -First 1)
+        if (@($osDrive).Count -eq 0) {
+            throw "OS install media was not attached correctly for VM '$VmName'. Expected path '$OsIsoPath'."
+        }
+        $osDrive = $osDrive[0]
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$UnattendIsoPath)) {
+        $unattendDrive = @($attachedDrives | Where-Object { [string]$_.Path -eq $UnattendIsoPath } | Select-Object -First 1)
+        if (@($unattendDrive).Count -eq 0) {
+            throw "Unattended media was not attached correctly for VM '$VmName'. Expected path '$UnattendIsoPath'."
+        }
+        $unattendDrive = $unattendDrive[0]
+    }
+
+    return [PSCustomObject]@{
+        VmName          = $VmName
+        OsIsoPath       = if ($null -ne $osDrive) { [string]$osDrive.Path } else { '' }
+        UnattendIsoPath = if ($null -ne $unattendDrive) { [string]$unattendDrive.Path } else { '' }
+        OsDvdDrive      = $osDrive
+        UnattendDvdDrive = $unattendDrive
+        DvdDriveCount   = @($attachedDrives).Count
+    }
 }
 
 Export-ModuleMember -Function @(
+    'Get-EALabOscdimgPath',
     'New-EALabVmUnattendXml',
     'New-EALabUnattendMedia',
     'Set-EALabVmInstallMedia'

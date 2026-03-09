@@ -111,6 +111,13 @@
                         "productKey": { "type": "string" }
                     }
                 },
+                "windowsServer2025": {
+                    "type": "object",
+                    "properties": {
+                        "isoPath": { "type": "string" },
+                        "productKey": { "type": "string" }
+                    }
+                },
                 "windowsClient": {
                     "type": "object",
                     "properties": {
@@ -141,7 +148,7 @@
                     },
                     "os": {
                         "type": "string",
-                        "enum": ["windowsServer2019", "windowsServer2022", "windowsClient", "linux"]
+                        "enum": ["windowsServer2019", "windowsServer2022", "windowsServer2025", "windowsClient", "linux"]
                     },
                     "generation": {
                         "type": "integer",

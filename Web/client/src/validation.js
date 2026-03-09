@@ -10,11 +10,12 @@ const CIDR_REGEX =
 export const VALID_DOMAINS = ['Win2012R2', 'Win2016', 'Win2019'];
 export const VALID_SWITCH_TYPES = ['Internal', 'Private', 'External'];
 export const VALID_VM_ROLES = ['DomainController', 'MemberServer', 'Client', 'Linux'];
-export const VALID_VM_OS = ['windowsServer2019', 'windowsServer2022', 'windowsClient', 'linux'];
+export const VALID_VM_OS = ['windowsServer2019', 'windowsServer2022', 'windowsServer2025', 'windowsClient', 'linux'];
 
 export const VM_OS_LABELS = {
   windowsServer2019: 'Windows Server 2019',
   windowsServer2022: 'Windows Server 2022',
+  windowsServer2025: 'Windows Server 2025',
   windowsClient: 'Windows Client',
   linux: 'Linux',
 };

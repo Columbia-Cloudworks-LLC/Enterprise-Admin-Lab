@@ -8,6 +8,7 @@ const __dirname = path.dirname(__filename);
 
 const router = express.Router();
 const scriptPath = path.resolve(__dirname, '../../../Invoke-EALab.ps1');
+const isDebugWebEnabled = /^(1|true|yes)$/i.test(String(process.env.EALAB_DEBUG_WEB || ''));
 
 const MAX_OUTPUT_BYTES = 1 * 1024 * 1024; // 1 MB output cap guards against runaway processes
 const TIMEOUT_MS = 30_000;                // 30 s kill timer
@@ -49,7 +50,7 @@ const PREREQUISITE_CHECKS = [
     canRemediate: true,
     quickFix: {
       docsUrl: 'https://learn.microsoft.com/windows-hardware/get-started/adk-install',
-      command: '$env:Path += ";C:\\Program Files (x86)\\Windows Kits\\10\\Assessment and Deployment Kit\\Deployment Tools\\amd64\\Oscdimg"',
+      command: '.\\Invoke-EALab.ps1 -RemediatePrerequisite -PrerequisiteName "Oscdimg Tool"',
     },
   },
 ];
@@ -77,16 +78,46 @@ function normalizeParsedStatus(statusTag) {
 
 function parsePrerequisiteLine(line) {
   const normalizedLine = stripAnsi(line).replace(/\r/g, '').trimEnd();
-  const match = normalizedLine.match(/^\s*\[(OK|FAIL|WARN|\?\?)\]\s+(.+?)\s{2,}([A-Za-z][A-Za-z0-9\- ]*)\s{2,}(.*)$/);
-  if (!match) {
+  const statusMatch = normalizedLine.match(/^\s*\[(OK|FAIL|WARN|\?\?)\]\s+(.*)$/);
+  if (!statusMatch) {
+    return null;
+  }
+
+  const statusTag = statusMatch[1].toUpperCase();
+  const remainder = statusMatch[2].trim();
+
+  // Prefer deterministic parsing using the known check catalog instead of
+  // relying on variable column spacing in console output.
+  for (const check of PREREQUISITE_CHECKS) {
+    if (!remainder.startsWith(check.name)) {
+      continue;
+    }
+
+    const afterName = remainder.slice(check.name.length).trimStart();
+    if (!afterName.startsWith(check.category)) {
+      continue;
+    }
+
+    const message = afterName.slice(check.category.length).trimStart();
+    return {
+      name: check.name,
+      category: check.category,
+      status: normalizeParsedStatus(statusTag),
+      message,
+    };
+  }
+
+  // Fallback regex parser keeps compatibility with unexpected/legacy rows.
+  const fallbackMatch = remainder.match(/^(.+?)\s{2,}([A-Za-z][A-Za-z0-9\- ]*)\s+(.*)$/);
+  if (!fallbackMatch) {
     return null;
   }
 
   return {
-    name: match[2].trim(),
-    category: match[3].trim(),
-    status: normalizeParsedStatus(match[1].toUpperCase()),
-    message: match[4].trim(),
+    name: fallbackMatch[1].trim(),
+    category: fallbackMatch[2].trim(),
+    status: normalizeParsedStatus(statusTag),
+    message: fallbackMatch[3].trim(),
   };
 }
 
@@ -132,8 +163,21 @@ function sendSseEvent(res, event, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
+function debugLog(message, details = '') {
+  if (!isDebugWebEnabled) {
+    return;
+  }
+  const suffix = details ? ` ${details}` : '';
+  console.log(`[EALab Debug] [prerequisites] ${message}${suffix}`);
+}
+
 function runPrerequisitesProcess({ onStdoutLine, onComplete, onFailure }) {
-  const ps = spawn(psExe, ['-NonInteractive', '-NoProfile', '-File', scriptPath, '-Validate']);
+  const validateArgs = ['-NonInteractive', '-NoProfile', '-File', scriptPath, '-Validate'];
+  if (isDebugWebEnabled) {
+    validateArgs.push('-Debug');
+  }
+  debugLog('Spawning prerequisites process:', `${psExe} ${validateArgs.join(' ')}`);
+  const ps = spawn(psExe, validateArgs);
 
   let stdout = '';
   let stderr = '';
@@ -175,6 +219,13 @@ function runPrerequisitesProcess({ onStdoutLine, onComplete, onFailure }) {
     if (timedOut) {
       return;
     }
+    debugLog('Prerequisites process exited.', `code=${code}`);
+    if (isDebugWebEnabled && stdout.trim()) {
+      console.log(`[EALab Debug] [prerequisites] Validate stdout:\n${stdout}`);
+    }
+    if (isDebugWebEnabled && stderr.trim()) {
+      console.log(`[EALab Debug] [prerequisites] Validate stderr:\n${stderr}`);
+    }
 
     if (stdoutBuffer.trim()) {
       onStdoutLine(stdoutBuffer);
@@ -210,7 +261,7 @@ router.post('/remediate', (req, res) => {
     return res.status(400).json({ error: `No remediation available for '${prerequisiteName}'.` });
   }
 
-  const ps = spawn(psExe, [
+  const remediationArgs = [
     '-NonInteractive',
     '-NoProfile',
     '-File',
@@ -218,7 +269,12 @@ router.post('/remediate', (req, res) => {
     '-RemediatePrerequisite',
     '-PrerequisiteName',
     prerequisiteName,
-  ]);
+  ];
+  if (isDebugWebEnabled) {
+    remediationArgs.push('-Debug');
+  }
+  debugLog('Spawning remediation process:', `${psExe} ${remediationArgs.join(' ')}`);
+  const ps = spawn(psExe, remediationArgs);
 
   let stdout = '';
   let stderr = '';
@@ -249,6 +305,13 @@ router.post('/remediate', (req, res) => {
     clearTimeout(timer);
     if (timedOut) {
       return;
+    }
+    debugLog('Remediation process exited.', `code=${code}`);
+    if (isDebugWebEnabled && stdout.trim()) {
+      console.log(`[EALab Debug] [prerequisites] Remediation stdout:\n${stdout}`);
+    }
+    if (isDebugWebEnabled && stderr.trim()) {
+      console.log(`[EALab Debug] [prerequisites] Remediation stderr:\n${stderr}`);
     }
 
     if (code !== 0) {

@@ -479,7 +479,7 @@ function Test-EALabConfig {
     } else {
         $vmNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         $validRoles = @('DomainController', 'MemberServer', 'Client', 'Linux')
-        $validOS    = @('windowsServer2019', 'windowsServer2022', 'windowsClient', 'linux')
+        $validOS    = @('windowsServer2019', 'windowsServer2022', 'windowsServer2025', 'windowsClient', 'linux')
         $validGens  = @(1, 2)
         $validPhaseTags = @('dc-primary', 'dc-additional', 'member', 'client', 'linux')
         $validBootstraps = @('winrm', 'ssh', 'none')
@@ -504,6 +504,25 @@ function Test-EALabConfig {
 
             if ($null -eq $vm.os -or $vm.os -notin $validOS) {
                 Add-Error "$field.os" "os must be one of: $($validOS -join ', ')."
+            }
+            else {
+                $isWindowsVm = [string]$vm.os -like 'windows*'
+                if ($isWindowsVm) {
+                    $baseImages = if ($null -ne $Config.baseImages) { $Config.baseImages } else { $null }
+                    $baseImageEntry = if ($null -ne $baseImages) { $baseImages.PSObject.Properties[[string]$vm.os] } else { $null }
+                    $isoPath = if ($null -ne $baseImageEntry -and $null -ne $baseImageEntry.Value) {
+                        [string]$baseImageEntry.Value.isoPath
+                    } else {
+                        ''
+                    }
+
+                    if ([string]::IsNullOrWhiteSpace($isoPath)) {
+                        Add-Error "$field.os" "Windows VM '$($vm.name)' requires baseImages.$($vm.os).isoPath to be configured."
+                    }
+                    elseif (-not (Test-Path -LiteralPath $isoPath -PathType Leaf)) {
+                        Add-Error "$field.os" "Windows VM '$($vm.name)' references ISO path '$isoPath', but the file was not found."
+                    }
+                }
             }
 
             $gen = $vm.generation
@@ -866,6 +885,7 @@ function New-EALabConfig {
             baseImages = [PSCustomObject]@{
                 windowsServer2019 = [PSCustomObject]@{ isoPath = ''; productKey = '' }
                 windowsServer2022 = [PSCustomObject]@{ isoPath = ''; productKey = '' }
+                windowsServer2025 = [PSCustomObject]@{ isoPath = ''; productKey = '' }
                 windowsClient     = [PSCustomObject]@{ isoPath = ''; productKey = '' }
                 linux             = [PSCustomObject]@{ isoPath = ''; distro = '' }
             }

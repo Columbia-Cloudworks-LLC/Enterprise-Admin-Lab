@@ -8,6 +8,7 @@
     Description       = 'Generates and attaches unattended setup artifacts for Enterprise Admin Lab VMs.'
     PowerShellVersion = '5.1'
     FunctionsToExport = @(
+        'Get-EALabOscdimgPath',
         'New-EALabVmUnattendXml',
         'New-EALabUnattendMedia',
         'Set-EALabVmInstallMedia'

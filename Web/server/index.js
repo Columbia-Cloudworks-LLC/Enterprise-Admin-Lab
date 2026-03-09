@@ -15,6 +15,7 @@ import credentialsRouter from './routes/credentials.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
+const isDebugWebEnabled = /^(1|true|yes)$/i.test(String(process.env.EALAB_DEBUG_WEB || ''));
 
 // Determine port based on environment
 const isDev = process.env.NODE_ENV !== 'production';
@@ -42,6 +43,26 @@ const corsOptions = {
 // Middleware
 app.use(express.json());
 app.use(cors(corsOptions));
+if (isDebugWebEnabled) {
+  let requestId = 0;
+  app.use((req, res, next) => {
+    requestId += 1;
+    const id = requestId;
+    const startedAt = Date.now();
+    const bodyPreview = req.body ? JSON.stringify(req.body).slice(0, 400) : '';
+    console.log(`[EALab Debug] [HTTP:${id}] --> ${req.method} ${req.originalUrl}`);
+    if (bodyPreview) {
+      console.log(`[EALab Debug] [HTTP:${id}] body: ${bodyPreview}`);
+    }
+    res.on('finish', () => {
+      const durationMs = Date.now() - startedAt;
+      console.log(
+        `[EALab Debug] [HTTP:${id}] <-- ${req.method} ${req.originalUrl} ${res.statusCode} (${durationMs}ms)`,
+      );
+    });
+    next();
+  });
+}
 
 // Mount API routes
 app.use('/api/labs', labsRouter);
@@ -84,6 +105,9 @@ app.use((err, req, res, next) => {
 // Start server
 const server = app.listen(port, () => {
   console.log(`[EALab Server] Express API running on port ${port}`);
+  if (isDebugWebEnabled) {
+    console.log('[EALab Debug] Web debug logging is enabled (EALAB_DEBUG_WEB=1).');
+  }
   if (isDev) {
     console.log('[EALab Server] Vite dev server should be running on port 47173');
     console.log('[EALab Server] Open http://localhost:47173 in your browser');

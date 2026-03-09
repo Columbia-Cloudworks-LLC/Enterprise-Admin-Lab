@@ -3,6 +3,7 @@ import { FormField } from './FormUtils.jsx';
 const OS_TYPES = [
   { key: 'windowsServer2019', label: 'Windows Server 2019', fields: ['isoPath', 'productKey'] },
   { key: 'windowsServer2022', label: 'Windows Server 2022', fields: ['isoPath', 'productKey'] },
+  { key: 'windowsServer2025', label: 'Windows Server 2025', fields: ['isoPath', 'productKey'] },
   { key: 'windowsClient', label: 'Windows Client', fields: ['isoPath', 'productKey'] },
   { key: 'linux', label: 'Linux', fields: ['isoPath', 'distro'] },
 ];
@@ -38,7 +39,7 @@ export default function BaseImagesTab({ config, onChange, errors }) {
                 type='text'
                 value={imageConfig.isoPath || ''}
                 onChange={(e) => handleFieldChange(os.key, 'isoPath', e.target.value)}
-                placeholder='e.g., C:\\ISOs\\Win2022.iso'
+                placeholder='e.g., E:\\ISOs\\Server2022.iso'
                 className='w-full'
               />
             </div>

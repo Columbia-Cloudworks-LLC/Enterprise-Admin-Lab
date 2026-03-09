@@ -248,8 +248,21 @@ try {
             # Start both Express API and Vite dev server via npm run dev (concurrently)
             Write-Host "[INFO] Starting Node.js development server..." -ForegroundColor Cyan
             Write-Debug "Starting npm dev process in '$webDir'."
+            $previousWebDebugEnv = $env:EALAB_DEBUG_WEB
+            if ($debugEnabled) {
+                Write-Debug 'PowerShell -Debug detected. Enabling web server debug output via EALAB_DEBUG_WEB=1.'
+                $env:EALAB_DEBUG_WEB = '1'
+            }
             $nodeProcess = Start-Process -FilePath 'npm.cmd' -ArgumentList 'run', 'dev' `
                 -WorkingDirectory $webDir -PassThru -NoNewWindow
+            if ($debugEnabled) {
+                if ([string]::IsNullOrWhiteSpace([string]$previousWebDebugEnv)) {
+                    Remove-Item Env:EALAB_DEBUG_WEB -ErrorAction SilentlyContinue
+                }
+                else {
+                    $env:EALAB_DEBUG_WEB = $previousWebDebugEnv
+                }
+            }
 
             # Give concurrently time to spin up both Express and Vite
             Start-Sleep -Seconds 4

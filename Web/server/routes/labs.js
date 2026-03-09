@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
-import { spawn, execSync } from 'child_process';
+import { spawn, spawnSync, execSync } from 'child_process';
 import { validateLabConfig } from '../validation.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -13,6 +13,15 @@ const labsDir = path.resolve(__dirname, '../../../Labs');
 const invokeScriptPath = path.resolve(__dirname, '../../../Invoke-EALab.ps1');
 const MAX_OUTPUT_BYTES = 1 * 1024 * 1024;
 const TIMEOUT_MS = 45 * 60 * 1000;
+const isDebugWebEnabled = /^(1|true|yes)$/i.test(String(process.env.EALAB_DEBUG_WEB || ''));
+
+function debugLog(message, details = '') {
+  if (!isDebugWebEnabled) {
+    return;
+  }
+  const suffix = details ? ` ${details}` : '';
+  console.log(`[EALab Debug] [labs] ${message}${suffix}`);
+}
 
 let psExe = 'powershell.exe';
 try {
@@ -104,13 +113,150 @@ function getLabLogsPath(config) {
   return 'E:\\EALabs\\Logs';
 }
 
+function getVmInstanceNames(vmDefinition) {
+  const baseName = String(vmDefinition?.name || '').trim();
+  if (!baseName) {
+    return [];
+  }
+
+  const rawCount = Number(vmDefinition?.count);
+  const count = Number.isInteger(rawCount) && rawCount > 0 ? rawCount : 1;
+  if (count <= 1) {
+    return [baseName];
+  }
+
+  const names = [];
+  for (let index = 1; index <= count; index += 1) {
+    names.push(`${baseName}-${String(index).padStart(2, '0')}`);
+  }
+  return names;
+}
+
+function getExpectedVmNames(config) {
+  const vmDefinitions = Array.isArray(config?.vmDefinitions) ? config.vmDefinitions : [];
+  return vmDefinitions.flatMap((vmDefinition) => getVmInstanceNames(vmDefinition));
+}
+
+function getLiveVmState(config) {
+  const expectedVmNames = getExpectedVmNames(config);
+  if (expectedVmNames.length === 0) {
+    return {
+      expectedCount: 0,
+      existingCount: 0,
+      runningCount: 0,
+      existingNames: [],
+      error: '',
+    };
+  }
+
+  const escapedNames = expectedVmNames.map((name) => `'${name.replace(/'/g, "''")}'`).join(', ');
+  const script = [
+    '$ErrorActionPreference = "SilentlyContinue"',
+    `$expected = @(${escapedNames})`,
+    '$existing = @()',
+    '$running = 0',
+    'foreach ($name in $expected) {',
+    '  $vm = Get-VM -Name $name -ErrorAction SilentlyContinue',
+    '  if ($null -eq $vm) { continue }',
+    '  $existing += [string]$vm.Name',
+    '  if ([string]$vm.State -eq "Running") { $running++ }',
+    '}',
+    '[PSCustomObject]@{',
+    '  expectedCount = $expected.Count',
+    '  existingCount = $existing.Count',
+    '  runningCount = $running',
+    '  existingNames = @($existing)',
+    '} | ConvertTo-Json -Compress',
+  ].join('; ');
+
+  try {
+    const processResult = spawnSync(psExe, ['-NoProfile', '-NonInteractive', '-Command', script], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      windowsHide: true,
+    });
+    if (processResult.error) {
+      throw processResult.error;
+    }
+    if (processResult.status !== 0) {
+      throw new Error((processResult.stderr || processResult.stdout || '').trim() || `PowerShell exited with ${processResult.status}.`);
+    }
+
+    const parsed = JSON.parse(String(processResult.stdout || '').trim());
+    return {
+      expectedCount: Number(parsed?.expectedCount) || expectedVmNames.length,
+      existingCount: Number(parsed?.existingCount) || 0,
+      runningCount: Number(parsed?.runningCount) || 0,
+      existingNames: Array.isArray(parsed?.existingNames) ? parsed.existingNames : [],
+      error: '',
+    };
+  } catch (err) {
+    debugLog('Live VM status probe failed.', err?.message || '');
+    return {
+      expectedCount: expectedVmNames.length,
+      existingCount: 0,
+      runningCount: 0,
+      existingNames: [],
+      error: err?.message || 'Unable to query Hyper-V VM status.',
+    };
+  }
+}
+
+function reconcileLifecycleStatus(state, liveState) {
+  const stateStatus = typeof state?.status === 'string' && state.status.trim()
+    ? state.status.trim()
+    : '';
+
+  const noVmResources = liveState.expectedCount > 0 && liveState.existingCount === 0;
+  if (noVmResources) {
+    if (stateStatus === 'Destroying') {
+      return {
+        status: 'Destroyed',
+        message: state?.message || 'No VM resources found. Lab appears destroyed.',
+        step: state?.step || 'Complete',
+        updated: state?.updated || '',
+      };
+    }
+
+    if (stateStatus === 'Creating' || stateStatus === 'Running' || stateStatus === 'Error') {
+      return {
+        status: 'NotCreated',
+        message: 'No VM resources were found for this lab. Previous state was reset.',
+        step: '',
+        updated: state?.updated || '',
+      };
+    }
+  }
+
+  if (!stateStatus) {
+    if (liveState.existingCount === 0) {
+      return { status: 'NotCreated', message: '', step: '', updated: '' };
+    }
+    return {
+      status: 'Running',
+      message: '',
+      step: '',
+      updated: '',
+    };
+  }
+
+  return {
+    status: stateStatus,
+    message: state?.message || '',
+    step: state?.step || '',
+    updated: state?.updated || '',
+  };
+}
+
 async function getLabStatus(config) {
   const logsPath = getLabLogsPath(config);
   const stateFile = path.join(logsPath, `${config?.metadata?.name || 'unknown'}.state.json`);
+  const liveState = getLiveVmState(config);
 
   try {
     const raw = await fs.readFile(stateFile, 'utf8');
     const state = JSON.parse(raw);
+    const reconciled = reconcileLifecycleStatus(state, liveState);
     const details = state.details || {};
     const vmProgress = details.vmProgress || {};
     const vmProgressSummary = Object.keys(vmProgress).map((vmName) => ({
@@ -121,30 +267,35 @@ async function getLabStatus(config) {
       updated: vmProgress[vmName]?.updated || '',
     }));
     return {
-      status: state.status || 'NotCreated',
-      message: state.message || '',
-      step: state.step || '',
-      updated: state.updated || '',
+      status: reconciled.status,
+      message: reconciled.message,
+      step: reconciled.step,
+      updated: reconciled.updated,
       operationLog: state.operationLog || '',
       details,
       vmProgressSummary,
+      liveVmState: liveState,
     };
   } catch {
+    const reconciled = reconcileLifecycleStatus(null, liveState);
     return {
-      status: 'NotCreated',
-      message: '',
-      step: '',
-      updated: '',
+      status: reconciled.status,
+      message: reconciled.message,
+      step: reconciled.step,
+      updated: reconciled.updated,
       operationLog: '',
       details: {},
       vmProgressSummary: [],
+      liveVmState: liveState,
     };
   }
 }
 
 function runPowerShell(args) {
   return new Promise((resolve, reject) => {
-    const ps = spawn(psExe, ['-NonInteractive', '-NoProfile', ...args]);
+    const effectiveArgs = isDebugWebEnabled ? [...args, '-Debug'] : [...args];
+    debugLog('Spawning PowerShell command:', `${psExe} ${effectiveArgs.join(' ')}`);
+    const ps = spawn(psExe, ['-NonInteractive', '-NoProfile', ...effectiveArgs]);
     let stdout = '';
     let stderr = '';
     let outputBytes = 0;
@@ -173,6 +324,13 @@ function runPowerShell(args) {
     ps.on('close', (code) => {
       clearTimeout(timer);
       if (timedOut) return;
+      debugLog('PowerShell process exited.', `code=${code}`);
+      if (isDebugWebEnabled && stdout.trim()) {
+        console.log(`[EALab Debug] [labs] PowerShell stdout:\n${stdout}`);
+      }
+      if (isDebugWebEnabled && stderr.trim()) {
+        console.log(`[EALab Debug] [labs] PowerShell stderr:\n${stderr}`);
+      }
 
       if (code !== 0) {
         const message = (stderr || stdout || `PowerShell exited with code ${code}`).trim();
@@ -181,6 +339,14 @@ function runPowerShell(args) {
           status = 403;
         } else if (message.includes('Provisioning prerequisites failed')) {
           status = 400;
+        } else if (message.includes('Windows unattended media generation is required')) {
+          status = 400;
+        } else if (message.includes('Domain dependency gate failed')) {
+          status = 424;
+        } else if (message.includes('Domain readiness timed out')) {
+          status = 504;
+        } else if (message.includes('did not become reachable through PowerShell Direct')) {
+          status = 504;
         } else if (message.includes('already exists. Re-run create with -Force')) {
           status = 409;
         } else if (message.includes('The file exists.')) {

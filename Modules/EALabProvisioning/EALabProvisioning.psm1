@@ -634,6 +634,13 @@ function Update-EALabVmProgress {
     if (-not $details.ContainsKey('vmProgress') -or $null -eq $details.vmProgress) {
         $details.vmProgress = @{}
     }
+    elseif ($details.vmProgress -isnot [System.Collections.IDictionary]) {
+        $normalizedVmProgress = @{}
+        foreach ($prop in $details.vmProgress.PSObject.Properties) {
+            $normalizedVmProgress[$prop.Name] = $prop.Value
+        }
+        $details.vmProgress = $normalizedVmProgress
+    }
 
     $details.vmProgress[$VmName] = [PSCustomObject]@{
         phase   = $Phase
@@ -920,6 +927,14 @@ function New-EALabEnvironment {
             throw "Provisioning prerequisites failed. $failedSummary"
         }
         $vmExecutionPlan = @(Get-EALabVmExecutionPlan -Context $context)
+        $windowsInstallTargets = @($vmExecutionPlan | Where-Object { $_.IsWindows -and -not [string]::IsNullOrWhiteSpace((Get-IsoPathForVm -Config $context.Config -VmDefinition $_.VmDefinition)) })
+        if ($windowsInstallTargets.Count -gt 0) {
+            $oscdimgPath = Get-EALabOscdimgPath
+            if ([string]::IsNullOrWhiteSpace([string]$oscdimgPath)) {
+                throw "Windows unattended media generation is required for this lab, but oscdimg.exe was not found. Install Windows ADK Deployment Tools or remediate the 'Oscdimg Tool' prerequisite before launching."
+            }
+            Write-Debug "Unattended media prerequisite satisfied. oscdimg path: '$oscdimgPath'."
+        }
         $requiredCredentialRefs = @(Get-EALabRequiredCredentialRefs -Context $context -VmExecutionPlan $vmExecutionPlan)
         $resolvedCredentialRefs = @{}
         if ($requiredCredentialRefs.Count -gt 0) {
@@ -1005,13 +1020,39 @@ function New-EALabEnvironment {
                     if ([int]$vmDef.generation -eq 2) {
                         $secureBootState = if ($vmDef.secureBoot -eq $false) { 'Off' } else { 'On' }
                         Set-VMFirmware -VMName $vmName -EnableSecureBoot $secureBootState -ErrorAction Stop | Out-Null
+                        Write-Debug ("VM '{0}' Gen2: SecureBoot={1}." -f $vmName, $secureBootState)
                     }
 
                     if ([string]$vmDef.os -like 'windows*' -and -not [string]::IsNullOrWhiteSpace($isoPath)) {
                         $unattendXmlPath = New-EALabVmUnattendXml -Context $context -VmDefinition $vmDef -VmName $vmName -LocalAdminCredential $credentialSet.LocalAdmin
                         $unattendIsoPath = New-EALabUnattendMedia -VmName $vmName -UnattendXmlPath $unattendXmlPath -OutputPath (Split-Path -Path $unattendXmlPath -Parent)
+                        Update-EALabVmProgress -Context $context -VmName $vmName -Phase 'UnattendGenerated' -Message "Unattend artifacts generated for $vmName."
+                        Write-EALabLog -Context $context -Level INFO -Message "Unattend generated for '$vmName'. XML='$unattendXmlPath' ISO='$unattendIsoPath'."
                     }
-                    Set-EALabVmInstallMedia -VmName $vmName -OsIsoPath $isoPath -UnattendIsoPath $unattendIsoPath
+                    $mediaAttachment = Set-EALabVmInstallMedia -VmName $vmName -OsIsoPath $isoPath -UnattendIsoPath $unattendIsoPath
+                    if ($null -ne $mediaAttachment) {
+                        Write-EALabLog -Context $context -Level INFO -Message ("Install media attached for '{0}'. OS='{1}', Unattend='{2}', DVDDrives={3}." -f `
+                                $vmName, [string]$mediaAttachment.OsIsoPath, [string]$mediaAttachment.UnattendIsoPath, [int]$mediaAttachment.DvdDriveCount)
+                        Update-EALabVmProgress -Context $context -VmName $vmName -Phase 'InstallMediaAttached' -Message "Install media attached for $vmName."
+                    }
+
+                    if ([int]$vmDef.generation -eq 2 -and -not [string]::IsNullOrWhiteSpace($isoPath)) {
+                        $osDvd = $null
+                        if ($null -ne $mediaAttachment -and
+                            $mediaAttachment.PSObject.Properties.Name -contains 'OsDvdDrive' -and
+                            $null -ne $mediaAttachment.OsDvdDrive) {
+                            $osDvd = $mediaAttachment.OsDvdDrive
+                        } else {
+                            $osDvd = Get-VMDvdDrive -VMName $vmName -ErrorAction SilentlyContinue |
+                                Sort-Object ControllerNumber, ControllerLocation | Select-Object -First 1
+                        }
+                        $hd = Get-VMHardDiskDrive -VMName $vmName -ErrorAction SilentlyContinue |
+                            Where-Object { $_.ControllerNumber -eq 0 } | Select-Object -First 1
+                        if ($null -ne $osDvd -and $null -ne $hd) {
+                            Set-VMFirmware -VMName $vmName -BootOrder $osDvd, $hd -ErrorAction Stop | Out-Null
+                            Write-Debug ("VM '{0}' Gen2: BootOrder set to OS DVD first, then hard disk." -f $vmName)
+                        }
+                    }
 
                     if ($StartVMs) {
                         Start-VM -Name $vmName -ErrorAction Stop | Out-Null
@@ -1053,9 +1094,10 @@ function New-EALabEnvironment {
 
             Invoke-EALabProvisionStage -Context $context -Stage 'GuestInstall' -Message 'Waiting for guest install readiness.' -Action {
                 foreach ($vmRuntime in @($vmExecutionPlan | Where-Object { $_.IsWindows })) {
-                    Update-EALabVmProgress -Context $context -VmName $vmRuntime.Name -Phase 'Installing' -Message "Waiting for $($vmRuntime.Name) to finish setup."
-                    Wait-EALabVmInstallReady -VmName $vmRuntime.Name -LocalAdminCredential $localAdminCredential -TimeoutSeconds $installTimeoutSeconds
-                    Update-EALabVmProgress -Context $context -VmName $vmRuntime.Name -Phase 'Installed' -Message "Windows setup completed on $($vmRuntime.Name)." -Status 'Succeeded'
+                    Update-EALabVmProgress -Context $context -VmName $vmRuntime.Name -Phase 'InstallReadinessCheck' -Message "Checking Hyper-V guest readiness signals for $($vmRuntime.Name)."
+                    $installReady = Wait-EALabVmInstallReady -VmName $vmRuntime.Name -LocalAdminCredential $localAdminCredential -TimeoutSeconds $installTimeoutSeconds
+                    Update-EALabVmProgress -Context $context -VmName $vmRuntime.Name -Phase 'Installed' -Message ("Windows setup completed on {0} via {1} after {2} attempts. {3}" -f `
+                            $vmRuntime.Name, [string]$installReady.ReadyVia, [int]$installReady.Attempts, [string]$installReady.LastStatus) -Status 'Succeeded'
                 }
             }
 
@@ -1070,32 +1112,56 @@ function New-EALabEnvironment {
             $primaryDcs = @($vmExecutionPlan | Where-Object { $_.IsDomainController -and $_.DeploymentType -eq 'newForest' })
             $additionalDcs = @($vmExecutionPlan | Where-Object { $_.IsDomainController -and $_.DeploymentType -eq 'additional' })
             $joinTargets = @($vmExecutionPlan | Where-Object { -not $_.IsDomainController -and $_.DomainJoinEnabled })
+            $primaryDcReady = $false
+
+            if ($primaryDcs.Count -eq 0 -and ($additionalDcs.Count -gt 0 -or $joinTargets.Count -gt 0)) {
+                throw "Domain dependency gate failed. Additional domain controllers or domain-join targets are defined, but no primary domain controller (deploymentType='newForest') was configured."
+            }
 
             if ($primaryDcs.Count -gt 0) {
                 Invoke-EALabProvisionStage -Context $context -Stage 'PromoteDC' -Message 'Promoting primary domain controller(s).' -Action {
                     foreach ($dcVm in $primaryDcs) {
                         Update-EALabVmProgress -Context $context -VmName $dcVm.Name -Phase 'PromoteDC' -Message "Promoting $($dcVm.Name) as primary DC."
-                        Invoke-EALabDomainControllerPromotion -Context $context -VmRuntime $dcVm -DomainAdminCredential $localAdminCredential -DsrmCredential $dsrmCredential
-                        Update-EALabVmProgress -Context $context -VmName $dcVm.Name -Phase 'Promoted' -Message "$($dcVm.Name) promoted to DC." -Status 'Succeeded'
+                        $promotionResult = Invoke-EALabDomainControllerPromotion -Context $context -VmRuntime $dcVm -DomainAdminCredential $localAdminCredential -DsrmCredential $dsrmCredential
+                        if ($null -ne $promotionResult -and [bool]$promotionResult.AlreadyDomainController) {
+                            Update-EALabVmProgress -Context $context -VmName $dcVm.Name -Phase 'Promoted' -Message "$($dcVm.Name) already promoted. $([string]$promotionResult.Reason)" -Status 'Succeeded'
+                        }
+                        else {
+                            Update-EALabVmProgress -Context $context -VmName $dcVm.Name -Phase 'Promoted' -Message "$($dcVm.Name) promotion initiated." -Status 'Succeeded'
+                        }
                     }
                 }
 
                 Invoke-EALabProvisionStage -Context $context -Stage 'DomainReadiness' -Message 'Waiting for domain readiness.' -Action {
-                    Wait-EALabDomainReadiness -Context $context -PrimaryDcName $primaryDcs[0].Name -TimeoutSeconds $postInstallTimeoutSeconds
+                    $domainReady = Wait-EALabDomainReadiness -Context $context -PrimaryDcName $primaryDcs[0].Name -Credential $localAdminCredential -TimeoutSeconds $postInstallTimeoutSeconds
+                    Write-EALabLog -Context $context -Level INFO -Message "Primary domain readiness reached on '$($primaryDcs[0].Name)' after $([int]$domainReady.Attempts) attempt(s). $([string]$domainReady.LastStatus)"
+                    Update-EALabVmProgress -Context $context -VmName $primaryDcs[0].Name -Phase 'PrimaryDCReady' -Message "Primary domain controller dependency gate satisfied for $($primaryDcs[0].Name)." -Status 'Succeeded'
                 }
+                $primaryDcReady = $true
             }
 
             if ($additionalDcs.Count -gt 0) {
+                if (-not $primaryDcReady) {
+                    throw "Domain dependency gate failed. Primary DC readiness was not achieved before additional DC promotion."
+                }
                 Invoke-EALabProvisionStage -Context $context -Stage 'PromoteAdditionalDC' -Message 'Promoting additional domain controllers.' -Action {
                     foreach ($dcVm in $additionalDcs) {
                         Update-EALabVmProgress -Context $context -VmName $dcVm.Name -Phase 'PromoteDC' -Message "Promoting additional DC $($dcVm.Name)."
-                        Invoke-EALabDomainControllerPromotion -Context $context -VmRuntime $dcVm -DomainAdminCredential $domainAdminCredential -DsrmCredential $dsrmCredential
-                        Update-EALabVmProgress -Context $context -VmName $dcVm.Name -Phase 'Promoted' -Message "$($dcVm.Name) promoted as additional DC." -Status 'Succeeded'
+                        $promotionResult = Invoke-EALabDomainControllerPromotion -Context $context -VmRuntime $dcVm -DomainAdminCredential $domainAdminCredential -DsrmCredential $dsrmCredential
+                        if ($null -ne $promotionResult -and [bool]$promotionResult.AlreadyDomainController) {
+                            Update-EALabVmProgress -Context $context -VmName $dcVm.Name -Phase 'Promoted' -Message "$($dcVm.Name) already promoted. $([string]$promotionResult.Reason)" -Status 'Succeeded'
+                        }
+                        else {
+                            Update-EALabVmProgress -Context $context -VmName $dcVm.Name -Phase 'Promoted' -Message "$($dcVm.Name) promotion initiated as additional DC." -Status 'Succeeded'
+                        }
                     }
                 }
             }
 
             if ($joinTargets.Count -gt 0) {
+                if (-not $primaryDcReady) {
+                    throw "Domain dependency gate failed. Primary DC readiness was not achieved before domain join."
+                }
                 Invoke-EALabProvisionStage -Context $context -Stage 'DomainJoin' -Message 'Joining member servers and clients to domain.' -Action {
                     foreach ($joinVm in $joinTargets) {
                         $joinCredential = $null

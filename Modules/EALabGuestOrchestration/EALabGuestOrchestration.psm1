@@ -41,22 +41,52 @@ function Wait-EALabVmInstallReady {
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $attempt = 0
+    $lastObserved = 'No VM telemetry collected yet.'
     Write-Debug "Waiting for VM '$VmName' to become reachable through PowerShell Direct. TimeoutSeconds=$TimeoutSeconds."
     while ((Get-Date) -lt $deadline) {
         $attempt++
+        $vmState = 'Unknown'
+        $heartbeatStatus = 'Unknown'
+        try {
+            $vm = Get-VM -Name $VmName -ErrorAction Stop
+            $vmState = [string]$vm.State
+            $heartbeatService = Get-VMIntegrationService -VMName $VmName -Name 'Heartbeat' -ErrorAction SilentlyContinue
+            if ($null -ne $heartbeatService) {
+                $heartbeatStatus = [string]$heartbeatService.PrimaryStatusDescription
+            }
+            $lastObserved = "VM State='$vmState', Heartbeat='$heartbeatStatus'"
+        }
+        catch {
+            $lastObserved = "VM telemetry unavailable: $($_.Exception.Message)"
+        }
+
+        if ($vmState -ne 'Running') {
+            Write-Debug "VM '$VmName' is not running on attempt $attempt. $lastObserved"
+            Start-Sleep -Seconds 10
+            continue
+        }
+
         try {
             [void](Invoke-EALabGuestCommand -VmName $VmName -Credential $LocalAdminCredential -ScriptBlock { 'ready' })
             Write-Debug "VM '$VmName' is reachable after $attempt attempt(s)."
-            return
+            return [PSCustomObject]@{
+                VmName     = $VmName
+                Attempts   = $attempt
+                VmState    = $vmState
+                Heartbeat  = $heartbeatStatus
+                ReadyVia   = 'PowerShellDirect'
+                LastStatus = $lastObserved
+            }
         }
         catch {
-            Write-Debug "VM '$VmName' not reachable on attempt ${attempt}: $($_.Exception.Message)"
+            $lastObserved = "$lastObserved; PowerShellDirect='$($_.Exception.Message)'"
+            Write-Debug "VM '$VmName' not reachable on attempt ${attempt}: $lastObserved"
             Start-Sleep -Seconds 15
         }
     }
 
     Write-Debug "VM '$VmName' did not become reachable before timeout after $attempt attempt(s)."
-    throw "VM '$VmName' did not become reachable through PowerShell Direct within $TimeoutSeconds seconds."
+    throw "VM '$VmName' did not become reachable through PowerShell Direct within $TimeoutSeconds seconds. Last observed: $lastObserved"
 }
 
 function Get-EALabVmGuestNetworkConfig {
@@ -280,22 +310,49 @@ function Invoke-EALabDomainControllerPromotion {
     }
     Write-Debug "Promoting VM '$vmName' to domain controller. DeploymentType='$deploymentType'."
 
-    Invoke-EALabGuestCommand -VmName $vmName -Credential $DomainAdminCredential -ScriptBlock {
+    $promotionResult = Invoke-EALabGuestCommand -VmName $vmName -Credential $DomainAdminCredential -ScriptBlock {
         param($domainFqdn, $netbiosName, $safeMode, $mode)
 
-        Install-WindowsFeature -Name AD-Domain-Services, DNS -IncludeManagementTools -ErrorAction Stop | Out-Null
+        $domainRole = [int](Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).DomainRole
+        if ($domainRole -ge 4) {
+            return [PSCustomObject]@{
+                AlreadyDomainController = $true
+                ActionTaken             = 'Skipped'
+                Reason                  = 'Host is already promoted as a domain controller.'
+            }
+        }
+
+        $featureState = Get-WindowsFeature -Name AD-Domain-Services -ErrorAction Stop
+        if (-not [bool]$featureState.Installed) {
+            Install-WindowsFeature -Name AD-Domain-Services, DNS -IncludeManagementTools -ErrorAction Stop | Out-Null
+        }
 
         if ($mode -eq 'additional') {
             Install-ADDSDomainController -DomainName $domainFqdn -InstallDns -SafeModeAdministratorPassword $safeMode -Force:$true -NoRebootOnCompletion:$false
         } else {
             Install-ADDSForest -DomainName $domainFqdn -DomainNetbiosName $netbiosName -InstallDns -SafeModeAdministratorPassword $safeMode -Force:$true -NoRebootOnCompletion:$false
         }
+        return [PSCustomObject]@{
+            AlreadyDomainController = $false
+            ActionTaken             = 'Promote'
+            Reason                  = "Promotion initiated in mode '$mode'."
+        }
     } -ArgumentList @(
         [string]$Context.Config.domain.fqdn,
         [string]$Context.Config.domain.netbiosName,
         $DsrmCredential.Password,
         $deploymentType
-    ) | Out-Null
+    )
+
+    $normalizedResult = @($promotionResult | Select-Object -First 1)
+    if ($normalizedResult.Count -eq 0) {
+        return [PSCustomObject]@{
+            AlreadyDomainController = $false
+            ActionTaken             = 'Unknown'
+            Reason                  = 'Promotion result did not return telemetry.'
+        }
+    }
+    return $normalizedResult[0]
 }
 
 function Wait-EALabDomainReadiness {
@@ -307,25 +364,89 @@ function Wait-EALabDomainReadiness {
         [Parameter(Mandatory = $true)]
         [string]$PrimaryDcName,
 
+        [Parameter(Mandatory = $true)]
+        [PSCredential]$Credential,
+
         [Parameter(Mandatory = $false)]
         [int]$TimeoutSeconds = 1800
     )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $attempt = 0
+    $lastStatus = 'No readiness checks executed yet.'
     Write-Debug "Waiting for domain readiness on primary DC '$PrimaryDcName'. TimeoutSeconds=$TimeoutSeconds."
     while ((Get-Date) -lt $deadline) {
         $attempt++
         try {
-            $reachable = Test-Connection -ComputerName $PrimaryDcName -Count 1 -Quiet -ErrorAction SilentlyContinue
-            if ($reachable) {
-                Write-Debug "Domain controller '$PrimaryDcName' is reachable after $attempt attempt(s)."
-                return
+            $status = Invoke-EALabGuestCommand -VmName $PrimaryDcName -Credential $Credential -ScriptBlock {
+                param($domainFqdn)
+
+                $netlogonRunning = $false
+                $adwsRunning = $false
+                $dnsSrvReady = $false
+                $adModuleReady = $false
+
+                $netlogon = Get-Service -Name Netlogon -ErrorAction SilentlyContinue
+                if ($null -ne $netlogon -and [string]$netlogon.Status -eq 'Running') {
+                    $netlogonRunning = $true
+                }
+
+                $adws = Get-Service -Name ADWS -ErrorAction SilentlyContinue
+                if ($null -ne $adws -and [string]$adws.Status -eq 'Running') {
+                    $adwsRunning = $true
+                }
+
+                $srvRecord = "_ldap._tcp.dc._msdcs.$domainFqdn"
+                try {
+                    if (Get-Command -Name Resolve-DnsName -ErrorAction SilentlyContinue) {
+                        $dnsEntry = Resolve-DnsName -Name $srvRecord -Type SRV -ErrorAction Stop | Select-Object -First 1
+                        if ($null -ne $dnsEntry) {
+                            $dnsSrvReady = $true
+                        }
+                    }
+                }
+                catch {
+                    $dnsSrvReady = $false
+                }
+
+                try {
+                    Import-Module ActiveDirectory -ErrorAction Stop
+                    $domain = Get-ADDomain -Identity $domainFqdn -ErrorAction Stop
+                    if ($null -ne $domain) {
+                        $adModuleReady = $true
+                    }
+                }
+                catch {
+                    $adModuleReady = $false
+                }
+
+                $ready = ($netlogonRunning -and $adwsRunning -and $dnsSrvReady -and $adModuleReady)
+                return [PSCustomObject]@{
+                    Ready           = $ready
+                    NetLogonRunning = $netlogonRunning
+                    ADWSRunning     = $adwsRunning
+                    DnsSrvReady     = $dnsSrvReady
+                    ADModuleReady   = $adModuleReady
+                }
+            } -ArgumentList @([string]$Context.Config.domain.fqdn)
+            $status = @($status | Select-Object -First 1)[0]
+
+            $lastStatus = "NetLogon=$([bool]$status.NetLogonRunning); ADWS=$([bool]$status.ADWSRunning); DnsSrv=$([bool]$status.DnsSrvReady); ADModule=$([bool]$status.ADModuleReady)"
+            if ([bool]$status.Ready) {
+                Write-Debug "Domain controller '$PrimaryDcName' is AD-ready after $attempt attempt(s). $lastStatus"
+                return [PSCustomObject]@{
+                    VmName      = $PrimaryDcName
+                    Attempts    = $attempt
+                    LastStatus  = $lastStatus
+                    Ready       = $true
+                    ReadyChecks = $status
+                }
             }
-            Write-Debug "Domain controller '$PrimaryDcName' not reachable on attempt $attempt."
+            Write-Debug "Domain controller '$PrimaryDcName' not AD-ready on attempt $attempt. $lastStatus"
         }
         catch {
-            Write-Debug "Domain readiness probe error on attempt $attempt for '$PrimaryDcName': $($_.Exception.Message)"
+            $lastStatus = "Readiness probe error: $($_.Exception.Message)"
+            Write-Debug "Domain readiness probe error on attempt $attempt for '$PrimaryDcName': $lastStatus"
             Start-Sleep -Seconds 15
         }
 
@@ -333,7 +454,7 @@ function Wait-EALabDomainReadiness {
     }
 
     Write-Debug "Domain readiness timeout waiting for '$PrimaryDcName' after $attempt attempt(s)."
-    throw "Domain readiness timed out waiting for domain controller '$PrimaryDcName'."
+    throw "Domain readiness timed out waiting for domain controller '$PrimaryDcName'. Last status: $lastStatus"
 }
 
 function Join-EALabMachineToDomain {

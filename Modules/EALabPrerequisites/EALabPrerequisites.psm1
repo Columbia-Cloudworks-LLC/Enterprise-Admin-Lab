@@ -55,6 +55,83 @@ function New-PrereqResult {
     }
 }
 
+# Build all known oscdimg.exe locations from environment + registry.
+function Get-EALabOscdimgCandidatePaths {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param()
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $baseRoots = @(
+        $env:ProgramFiles,
+        ${env:ProgramFiles(x86)}
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+
+    foreach ($baseRoot in $baseRoots) {
+        foreach ($kitsVersion in @('10', '11')) {
+            foreach ($arch in @('amd64', 'x86')) {
+                [void]$candidates.Add(
+                    (Join-Path $baseRoot "Windows Kits\$kitsVersion\Assessment and Deployment Kit\Deployment Tools\$arch\Oscdimg\oscdimg.exe")
+                )
+            }
+        }
+    }
+
+    foreach ($registryPath in @(
+            'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots'
+        )) {
+        if (-not (Test-Path -LiteralPath $registryPath)) {
+            continue
+        }
+
+        $roots = Get-ItemProperty -LiteralPath $registryPath -ErrorAction SilentlyContinue
+        if ($null -eq $roots) {
+            continue
+        }
+
+        foreach ($prop in $roots.PSObject.Properties) {
+            if ($prop.Name -notmatch '^KitsRoot\d+$') {
+                continue
+            }
+
+            $kitsRoot = [string]$prop.Value
+            if ([string]::IsNullOrWhiteSpace($kitsRoot)) {
+                continue
+            }
+
+            foreach ($arch in @('amd64', 'x86')) {
+                [void]$candidates.Add(
+                    (Join-Path $kitsRoot "Assessment and Deployment Kit\Deployment Tools\$arch\Oscdimg\oscdimg.exe")
+                )
+            }
+        }
+    }
+
+    return @($candidates | Select-Object -Unique)
+}
+
+function Get-EALabOscdimgPath {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    $oscdimg = Get-Command -Name 'oscdimg.exe' -ErrorAction SilentlyContinue
+    if ($null -ne $oscdimg -and -not [string]::IsNullOrWhiteSpace([string]$oscdimg.Source)) {
+        return [string]$oscdimg.Source
+    }
+
+    $resolved = Get-EALabOscdimgCandidatePaths |
+        Where-Object { Test-Path -LiteralPath $_ } |
+        Select-Object -First 1
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$resolved)) {
+        return [string]$resolved
+    }
+
+    return $null
+}
+
 # --------------------------------------------------------------------------
 # Private check functions
 # --------------------------------------------------------------------------
@@ -437,31 +514,16 @@ function Test-OscdimgTool {
     param()
 
     try {
-        $candidateExePaths = @(
-            'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\oscdimg.exe',
-            'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\x86\Oscdimg\oscdimg.exe'
-        )
-
-        $oscdimg = Get-Command -Name 'oscdimg.exe' -ErrorAction SilentlyContinue
-        if ($null -ne $oscdimg) {
+        $oscdimgPath = Get-EALabOscdimgPath
+        if (-not [string]::IsNullOrWhiteSpace([string]$oscdimgPath)) {
             return (New-PrereqResult -Name 'Oscdimg Tool' -Category 'Provisioning' -Status 'Passed' `
-                -Message "oscdimg.exe detected at '$($oscdimg.Source)'.")
-        }
-
-        $directPath = $candidateExePaths | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-        if (-not [string]::IsNullOrWhiteSpace([string]$directPath)) {
-            return (New-PrereqResult -Name 'Oscdimg Tool' -Category 'Provisioning' -Status 'Passed' `
-                -Message "oscdimg.exe detected at '$directPath' (found via ADK install path).")
+                -Message "oscdimg.exe detected at '$oscdimgPath'.")
         }
 
         return (New-PrereqResult -Name 'Oscdimg Tool' -Category 'Provisioning' -Status 'Warning' `
             -Message 'oscdimg.exe not found. Install Windows ADK with Deployment Tools. Required for unattended media generation during VM provisioning.' `
             -Remediation {
-                $candidateExePaths = @(
-                    'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\oscdimg.exe',
-                    'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\x86\Oscdimg\oscdimg.exe'
-                )
-                $foundExe = $candidateExePaths | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+                $foundExe = Get-EALabOscdimgPath
                 if ([string]::IsNullOrWhiteSpace([string]$foundExe)) {
                     throw 'Windows ADK Deployment Tools are not installed. Install ADK: https://learn.microsoft.com/windows-hardware/get-started/adk-install'
                 }
@@ -559,6 +621,7 @@ function Test-EALabProvisioningReadiness {
             [void]$usedOs.Add([string]$vm.os)
         }
     }
+    $hasWindowsGuests = ($usedOs | Where-Object { [string]$_ -like 'windows*' } | Measure-Object).Count -gt 0
 
     foreach ($osKey in $usedOs) {
         Write-Debug "Checking ISO path for OS key '$osKey'."
@@ -583,6 +646,17 @@ function Test-EALabProvisioningReadiness {
             Write-Debug "ISO path missing on disk for '$osKey': $isoPath"
             [void]$results.Add((New-PrereqResult -Name "ISO Path ($osKey)" -Category 'Provisioning' -Status 'Failed' `
                 -Message "ISO not found: $isoPath"))
+        }
+    }
+
+    $oscdimgCheck = Test-OscdimgTool
+    if ($null -ne $oscdimgCheck) {
+        if ($hasWindowsGuests -and [string]$oscdimgCheck.Status -eq 'Warning') {
+            [void]$results.Add((New-PrereqResult -Name $oscdimgCheck.Name -Category $oscdimgCheck.Category -Status 'Failed' `
+                -Message "Windows VM definitions require unattended media generation. $([string]$oscdimgCheck.Message)"))
+        }
+        else {
+            [void]$results.Add($oscdimgCheck)
         }
     }
 
@@ -639,8 +713,12 @@ function Test-EALabProvisioningReadiness {
             -Message "Could not evaluate free space for '$vmRootPath': $($_.Exception.Message)"))
     }
 
-    # 3) Hyper-V cmdlet availability sanity
-    $requiredCmdlets = @('Get-VM', 'New-VM', 'Remove-VM', 'Get-VMSwitch', 'New-VMSwitch')
+    # 3) Hyper-V cmdlet availability sanity (including media and firmware)
+    $requiredCmdlets = @(
+        'Get-VM', 'New-VM', 'Remove-VM', 'Get-VMSwitch', 'New-VMSwitch',
+        'Add-VMDvdDrive', 'Set-VMDvdDrive', 'Get-VMDvdDrive', 'Get-VMHardDiskDrive',
+        'Set-VMFirmware', 'Get-VMFirmware'
+    )
     foreach ($cmd in $requiredCmdlets) {
         if (Get-Command -Name $cmd -ErrorAction SilentlyContinue) {
             Write-Debug "Hyper-V cmdlet check passed: $cmd"
@@ -651,6 +729,43 @@ function Test-EALabProvisioningReadiness {
             Write-Debug "Hyper-V cmdlet check failed: $cmd"
             [void]$results.Add((New-PrereqResult -Name "Hyper-V Cmdlet $cmd" -Category 'Provisioning' -Status 'Failed' `
                 -Message "$cmd is not available. Hyper-V module may be missing."))
+        }
+    }
+
+    # 3b) Optional UEFI boot file check for Windows ISOs (Gen2 lab VMs require UEFI-bootable media)
+    $gen2WindowsOs = @($Config.vmDefinitions) | Where-Object {
+        [int]$_.generation -eq 2 -and [string]$_.os -like 'windows*'
+    }
+    if ($gen2WindowsOs.Count -gt 0) {
+        foreach ($osKey in $usedOs) {
+            if ([string]$osKey -notlike 'windows*') { continue }
+            $isoPath = $null
+            if ($null -ne $Config.baseImages -and $Config.baseImages.PSObject.Properties.Name -contains $osKey) {
+                $isoPath = [string]$Config.baseImages.$osKey.isoPath
+            }
+            if ([string]::IsNullOrWhiteSpace($isoPath) -or -not (Test-Path -LiteralPath $isoPath -PathType Leaf)) {
+                continue
+            }
+            try {
+                $img = Mount-DiskImage -ImagePath $isoPath -PassThru -ErrorAction Stop
+                $vol = $img | Get-Volume
+                $efiBootPath = Join-Path ($vol.DriveLetter + ':\') 'EFI\BOOT\bootx64.efi'
+                $hasUefi = Test-Path -LiteralPath $efiBootPath -PathType Leaf
+                Dismount-DiskImage -ImagePath $isoPath -ErrorAction SilentlyContinue | Out-Null
+                if ($hasUefi) {
+                    [void]$results.Add((New-PrereqResult -Name "ISO UEFI Boot ($osKey)" -Category 'Provisioning' -Status 'Passed' `
+                        -Message "ISO contains UEFI boot file (bootx64.efi)."))
+                }
+                else {
+                    [void]$results.Add((New-PrereqResult -Name "ISO UEFI Boot ($osKey)" -Category 'Provisioning' -Status 'Warning' `
+                        -Message "ISO may not support UEFI boot. Gen2 VMs require EFI\BOOT\bootx64.efi. Verify Windows eval/retail ISO."))
+                }
+            }
+            catch {
+                Write-Debug "ISO UEFI check failed for '$osKey': $($_.Exception.Message)"
+                [void]$results.Add((New-PrereqResult -Name "ISO UEFI Boot ($osKey)" -Category 'Provisioning' -Status 'Warning' `
+                    -Message "Could not verify UEFI boot files. Ensure Windows ISO supports UEFI for Gen2 VMs: $($_.Exception.Message)"))
+            }
         }
     }
 

@@ -122,7 +122,7 @@ Labs are stored as JSON files in `Labs/`. The schema is defined in `Config/lab-s
   ],
   "baseImages": {
     "windowsServer2022": {
-      "isoPath": "E:\\ISOs\\20348.169.210806-2348.fe_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso"
+      "isoPath": "E:\\ISOs\\Server2022.iso"
     }
   },
   "vmDefinitions": [

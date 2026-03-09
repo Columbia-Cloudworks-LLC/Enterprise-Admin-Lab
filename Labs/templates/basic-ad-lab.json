@@ -44,15 +44,19 @@
     ],
     "baseImages": {
         "windowsServer2019": {
-            "isoPath": "",
+            "isoPath": "E:\\ISOs\\Server2019.iso",
             "productKey": ""
         },
         "windowsServer2022": {
-            "isoPath": "",
+            "isoPath": "E:\\ISOs\\Server2022.iso",
+            "productKey": ""
+        },
+        "windowsServer2025": {
+            "isoPath": "E:\\ISOs\\Server2025.iso",
             "productKey": ""
         },
         "windowsClient": {
-            "isoPath": "",
+            "isoPath": "E:\\ISOs\\Windows10LTSC.iso",
             "productKey": ""
         },
         "linux": {

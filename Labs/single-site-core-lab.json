@@ -50,15 +50,19 @@
   ],
   "baseImages": {
     "windowsServer2019": {
-      "isoPath": "E:\\ISOs\\17763.253.190108-0006.rs5_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso",
+      "isoPath": "E:\\ISOs\\Server2019.iso",
       "productKey": ""
     },
     "windowsServer2022": {
-      "isoPath": "E:\\ISOs\\20348.169.210806-2348.fe_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso",
+      "isoPath": "E:\\ISOs\\Server2022.iso",
+      "productKey": ""
+    },
+    "windowsServer2025": {
+      "isoPath": "E:\\ISOs\\Server2025.iso",
       "productKey": ""
     },
     "windowsClient": {
-      "isoPath": "",
+      "isoPath": "E:\\ISOs\\Windows10LTSC.iso",
       "productKey": ""
     },
     "linux": {

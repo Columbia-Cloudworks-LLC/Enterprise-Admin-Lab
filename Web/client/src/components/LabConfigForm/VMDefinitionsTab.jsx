@@ -4,6 +4,7 @@ const VM_ROLES = ['DomainController', 'MemberServer', 'Client', 'Linux'];
 const VM_OS = [
   { value: 'windowsServer2019', label: 'Windows Server 2019' },
   { value: 'windowsServer2022', label: 'Windows Server 2022' },
+  { value: 'windowsServer2025', label: 'Windows Server 2025' },
   { value: 'windowsClient', label: 'Windows Client' },
   { value: 'linux', label: 'Linux' },
 ];
