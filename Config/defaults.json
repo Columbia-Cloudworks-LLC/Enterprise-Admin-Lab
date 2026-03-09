@@ -1,0 +1,59 @@
+{
+    "version": "2.0",
+    "vmRootPath": "E:\\EALabs",
+    "labsPath": "E:\\EALabs",
+    "logsPath": "E:\\EALabs\\Logs",
+    "minimumDiskSpaceGB": 50,
+    "webUIPort": 0,
+    "templatePath": "Labs/templates/",
+    "defaultVMGeneration": 2,
+    "defaultHardware": {
+        "cpuCount": 2,
+        "memoryMB": 2048,
+        "diskSizeGB": 60
+    },
+    "defaultDomain": {
+        "name": "lab.local",
+        "netbiosName": "LAB",
+        "safeModePassword": ""
+    },
+    "defaultCredentials": {
+        "localAdminRef": "",
+        "domainAdminRef": "",
+        "dsrmRef": ""
+    },
+    "guestDefaults": {
+        "locale": "en-US",
+        "timeZone": "UTC",
+        "installTimeoutMinutes": 90,
+        "postInstallTimeoutMinutes": 45,
+        "defaultTools": [],
+        "domainJoinOuPath": ""
+    },
+    "baseImages": {
+        "windowsServer2019": {
+            "isoPath": "",
+            "productKey": ""
+        },
+        "windowsServer2022": {
+            "isoPath": "",
+            "productKey": ""
+        },
+        "windowsClient": {
+            "isoPath": "",
+            "productKey": ""
+        },
+        "linux": {
+            "isoPath": "",
+            "distro": ""
+        }
+    },
+    "defaultOrchestration": {
+        "engine": "hybrid",
+        "controller": "shared",
+        "postProvisionEnabled": true,
+        "playbookProfile": "default-ad",
+        "inventoryStrategy": "per-lab",
+        "skipOrchestration": false
+    }
+}

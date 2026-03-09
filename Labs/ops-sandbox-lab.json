@@ -1,0 +1,214 @@
+{
+  "metadata": {
+    "name": "ops-sandbox-lab",
+    "displayName": "Ops Sandbox Lab",
+    "description": "One DC and two member servers for operations tooling and automation testing.",
+    "author": "",
+    "created": "2026-03-08T14:24:00Z",
+    "modified": "2026-03-08T14:24:00Z",
+    "tags": [
+      "ops",
+      "automation",
+      "sandbox"
+    ]
+  },
+  "domain": {
+    "fqdn": "ops.lab.local",
+    "netbiosName": "OPS",
+    "functionalLevel": "Win2019",
+    "safeModePassword": ""
+  },
+  "credentials": {
+    "localAdminRef": "ealab-local-admin",
+    "domainAdminRef": "ealab-domain-admin",
+    "dsrmRef": "ealab-dsrm"
+  },
+  "guestDefaults": {
+    "locale": "en-US",
+    "timeZone": "UTC",
+    "installTimeoutMinutes": 90,
+    "postInstallTimeoutMinutes": 45,
+    "defaultTools": [],
+    "domainJoinOuPath": "OU=Servers,DC=ops,DC=lab,DC=local"
+  },
+  "networks": [
+    {
+      "name": "OpsInternal",
+      "switchType": "Internal",
+      "subnet": "192.168.30.0/24",
+      "gateway": "192.168.30.1",
+      "dnsServers": [
+        "192.168.30.10"
+      ]
+    }
+  ],
+  "baseImages": {
+    "windowsServer2019": {
+      "isoPath": "E:\\ISOs\\17763.253.190108-0006.rs5_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso",
+      "productKey": ""
+    },
+    "windowsServer2022": {
+      "isoPath": "E:\\ISOs\\20348.169.210806-2348.fe_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso",
+      "productKey": ""
+    },
+    "windowsClient": {
+      "isoPath": "",
+      "productKey": ""
+    },
+    "linux": {
+      "isoPath": "",
+      "distro": ""
+    }
+  },
+  "vmDefinitions": [
+    {
+      "name": "OPS-DC01",
+      "role": "DomainController",
+      "roles": [
+        "DomainController",
+        "DNS"
+      ],
+      "os": "windowsServer2022",
+      "generation": 2,
+      "secureBoot": true,
+      "tpmEnabled": false,
+      "hardware": {
+        "cpuCount": 2,
+        "memoryMB": 4096,
+        "diskSizeGB": 80
+      },
+      "network": "OpsInternal",
+      "staticIP": "192.168.30.10",
+      "count": 1,
+      "notes": "Domain controller for operations sandbox.",
+      "domainController": {
+        "deploymentType": "newForest"
+      },
+      "orchestration": {
+        "phaseTag": "dc-primary",
+        "bootstrap": "winrm"
+      },
+      "guestConfiguration": {
+        "computerName": "OPS-DC01",
+        "network": {
+          "ipAddress": "192.168.30.10",
+          "subnetMask": "255.255.255.0",
+          "gateway": "192.168.30.1",
+          "dnsServers": [
+            "192.168.30.10"
+          ]
+        },
+        "domainJoin": {
+          "enabled": false,
+          "ouPath": "",
+          "credentialRef": ""
+        },
+        "tools": [],
+        "firstBootScript": ""
+      }
+    },
+    {
+      "name": "OPS-MGMT01",
+      "role": "MemberServer",
+      "roles": [
+        "MemberServer"
+      ],
+      "os": "windowsServer2022",
+      "generation": 2,
+      "secureBoot": true,
+      "tpmEnabled": false,
+      "hardware": {
+        "cpuCount": 2,
+        "memoryMB": 3072,
+        "diskSizeGB": 80
+      },
+      "network": "OpsInternal",
+      "staticIP": "192.168.30.20",
+      "count": 1,
+      "notes": "Management and automation server.",
+      "orchestration": {
+        "phaseTag": "member",
+        "bootstrap": "winrm"
+      },
+      "guestConfiguration": {
+        "computerName": "OPS-MGMT01",
+        "network": {
+          "ipAddress": "192.168.30.20",
+          "subnetMask": "255.255.255.0",
+          "gateway": "192.168.30.1",
+          "dnsServers": [
+            "192.168.30.10"
+          ]
+        },
+        "domainJoin": {
+          "enabled": true,
+          "ouPath": "",
+          "credentialRef": "ealab-domain-admin"
+        },
+        "tools": [
+          "RSAT-AD-Tools"
+        ],
+        "firstBootScript": ""
+      }
+    },
+    {
+      "name": "OPS-SQL01",
+      "role": "MemberServer",
+      "roles": [
+        "MemberServer"
+      ],
+      "os": "windowsServer2022",
+      "generation": 2,
+      "secureBoot": true,
+      "tpmEnabled": false,
+      "hardware": {
+        "cpuCount": 4,
+        "memoryMB": 6144,
+        "diskSizeGB": 120
+      },
+      "network": "OpsInternal",
+      "staticIP": "192.168.30.30",
+      "count": 1,
+      "notes": "Data tier sandbox node.",
+      "orchestration": {
+        "phaseTag": "member",
+        "bootstrap": "winrm"
+      },
+      "guestConfiguration": {
+        "computerName": "OPS-SQL01",
+        "network": {
+          "ipAddress": "192.168.30.30",
+          "subnetMask": "255.255.255.0",
+          "gateway": "192.168.30.1",
+          "dnsServers": [
+            "192.168.30.10"
+          ]
+        },
+        "domainJoin": {
+          "enabled": true,
+          "ouPath": "",
+          "credentialRef": "ealab-domain-admin"
+        },
+        "tools": [],
+        "firstBootScript": ""
+      }
+    }
+  ],
+  "globalHardwareDefaults": {
+    "cpuCount": 2,
+    "memoryMB": 2048,
+    "diskSizeGB": 60
+  },
+  "storage": {
+    "vmRootPath": "E:\\EALabs",
+    "logsPath": "E:\\EALabs\\Logs"
+  },
+  "orchestration": {
+    "engine": "hybrid",
+    "controller": "shared",
+    "postProvisionEnabled": true,
+    "playbookProfile": "default-ad",
+    "inventoryStrategy": "per-lab",
+    "skipOrchestration": false
+  }
+}

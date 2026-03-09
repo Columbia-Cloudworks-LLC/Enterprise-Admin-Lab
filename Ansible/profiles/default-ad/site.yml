@@ -1,0 +1,58 @@
+---
+# Hybrid profile contract:
+# - Inventory groups: domain_controllers, member_servers, clients, linux_hosts
+# - Required vars: domainFqdn, domainNetbiosName
+# - Optional vars for AD operations:
+#   domainSafeModePassword, domainAdminUser, domainAdminPassword, domainJoinOuPath
+# - Safety switches:
+#   lab_enable_ad_promotion (default false), lab_enable_domain_join (default false)
+
+- name: Validate connectivity to Windows guests
+  hosts: domain_controllers:member_servers:clients
+  gather_facts: false
+  tasks:
+    - name: Check WinRM reachability
+      ansible.windows.win_ping:
+
+- name: Bootstrap Windows baseline
+  hosts: domain_controllers:member_servers:clients
+  gather_facts: false
+  tasks:
+    - name: Ensure AD DS management tools on domain controllers
+      ansible.windows.win_feature:
+        name: RSAT-AD-PowerShell
+        state: present
+      when: "'domain_controllers' in group_names"
+
+    - name: Ensure PowerShell remoting is enabled
+      ansible.windows.win_powershell:
+        script: |
+          Enable-PSRemoting -Force
+
+- name: Configure primary domain controller
+  hosts: domain_controllers
+  gather_facts: false
+  tasks:
+    - name: Promote first domain controller and create forest
+      microsoft.ad.domain:
+        dns_domain_name: "{{ domainFqdn }}"
+        domain_netbios_name: "{{ domainNetbiosName }}"
+        safe_mode_password: "{{ domainSafeModePassword }}"
+        reboot: true
+      when:
+        - (hostvars[inventory_hostname].lab_phase_tag | default('')) == 'dc-primary'
+        - (lab_enable_ad_promotion | default(false)) | bool
+
+- name: Join member servers and clients
+  hosts: member_servers:clients
+  gather_facts: false
+  tasks:
+    - name: Join machine to Active Directory
+      microsoft.ad.membership:
+        state: domain
+        dns_domain_name: "{{ domainFqdn }}"
+        domain_admin_user: "{{ domainAdminUser }}"
+        domain_admin_password: "{{ domainAdminPassword }}"
+        domain_ou_path: "{{ domainJoinOuPath | default(omit) }}"
+        reboot: true
+      when: (lab_enable_domain_join | default(false)) | bool

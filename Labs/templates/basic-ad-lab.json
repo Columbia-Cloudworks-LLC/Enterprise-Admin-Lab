@@ -1,0 +1,151 @@
+{
+    "metadata": {
+        "name": "basic-ad-lab",
+        "displayName": "Basic AD Lab",
+        "description": "Minimal Active Directory forest with one Domain Controller and one Member Server.",
+        "author": "",
+        "created": "2026-02-22T00:00:00Z",
+        "modified": "2026-02-22T00:00:00Z",
+        "tags": ["ad", "starter", "template"]
+    },
+    "domain": {
+        "fqdn": "lab.local",
+        "netbiosName": "LAB",
+        "functionalLevel": "Win2019",
+        "safeModePassword": ""
+    },
+    "credentials": {
+        "localAdminRef": "ealab-local-admin",
+        "domainAdminRef": "ealab-domain-admin",
+        "dsrmRef": "ealab-dsrm"
+    },
+    "guestDefaults": {
+        "locale": "en-US",
+        "timeZone": "UTC",
+        "installTimeoutMinutes": 90,
+        "postInstallTimeoutMinutes": 45,
+        "defaultTools": [],
+        "domainJoinOuPath": ""
+    },
+    "networks": [
+        {
+            "name": "LabInternal",
+            "switchType": "Internal",
+            "subnet": "192.168.10.0/24",
+            "gateway": "192.168.10.1",
+            "dnsServers": ["192.168.10.10"]
+        }
+    ],
+    "baseImages": {
+        "windowsServer2019": {
+            "isoPath": "",
+            "productKey": ""
+        },
+        "windowsServer2022": {
+            "isoPath": "",
+            "productKey": ""
+        },
+        "windowsClient": {
+            "isoPath": "",
+            "productKey": ""
+        },
+        "linux": {
+            "isoPath": "",
+            "distro": ""
+        }
+    },
+    "vmDefinitions": [
+        {
+            "name": "DC01",
+            "role": "DomainController",
+            "os": "windowsServer2022",
+            "generation": 2,
+            "secureBoot": true,
+            "tpmEnabled": false,
+            "hardware": {
+                "cpuCount": 2,
+                "memoryMB": 2048,
+                "diskSizeGB": 60
+            },
+            "network": "LabInternal",
+            "staticIP": "192.168.10.10",
+            "count": 1,
+            "notes": "Primary Domain Controller",
+            "roles": ["DomainController", "DNS"],
+            "domainController": {
+                "deploymentType": "newForest"
+            },
+            "guestConfiguration": {
+                "computerName": "DC01",
+                "locale": "en-US",
+                "timeZone": "UTC",
+                "network": {
+                    "ipAddress": "192.168.10.10",
+                    "subnetMask": "255.255.255.0",
+                    "gateway": "192.168.10.1",
+                    "dnsServers": ["192.168.10.10"]
+                },
+                "domainJoin": {
+                    "enabled": false,
+                    "ouPath": "",
+                    "credentialRef": ""
+                },
+                "tools": [],
+                "firstBootScript": ""
+            }
+        },
+        {
+            "name": "SRV01",
+            "role": "MemberServer",
+            "os": "windowsServer2022",
+            "generation": 2,
+            "secureBoot": true,
+            "tpmEnabled": false,
+            "hardware": {
+                "cpuCount": 2,
+                "memoryMB": 2048,
+                "diskSizeGB": 60
+            },
+            "network": "LabInternal",
+            "staticIP": "",
+            "count": 1,
+            "notes": "Member Server",
+            "roles": ["MemberServer"],
+            "guestConfiguration": {
+                "computerName": "SRV01",
+                "locale": "en-US",
+                "timeZone": "UTC",
+                "network": {
+                    "ipAddress": "192.168.10.20",
+                    "subnetMask": "255.255.255.0",
+                    "gateway": "192.168.10.1",
+                    "dnsServers": ["192.168.10.10"]
+                },
+                "domainJoin": {
+                    "enabled": true,
+                    "ouPath": "",
+                    "credentialRef": "ealab-domain-admin"
+                },
+                "tools": [],
+                "firstBootScript": ""
+            }
+        }
+    ],
+    "globalHardwareDefaults": {
+        "cpuCount": 2,
+        "memoryMB": 2048,
+        "diskSizeGB": 60
+    },
+    "storage": {
+        "vmRootPath": "E:\\EALabs",
+        "logsPath": "E:\\EALabs\\Logs"
+    },
+    "orchestration": {
+        "engine": "hybrid",
+        "controller": "shared",
+        "postProvisionEnabled": true,
+        "playbookProfile": "default-ad",
+        "inventoryStrategy": "per-lab",
+        "skipOrchestration": false
+    }
+}

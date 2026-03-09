@@ -1,0 +1,223 @@
+{
+  "metadata": {
+    "name": "dual-dc-enterprise-lab",
+    "displayName": "Dual DC Enterprise Lab",
+    "description": "Primary and additional DC with one member server for replication and failover practice.",
+    "author": "",
+    "created": "2026-03-08T14:22:00Z",
+    "modified": "2026-03-08T14:22:00Z",
+    "tags": [
+      "ad",
+      "replication",
+      "dual-dc"
+    ]
+  },
+  "domain": {
+    "fqdn": "corp.lab.local",
+    "netbiosName": "CORP",
+    "functionalLevel": "Win2019",
+    "safeModePassword": ""
+  },
+  "credentials": {
+    "localAdminRef": "ealab-local-admin",
+    "domainAdminRef": "ealab-domain-admin",
+    "dsrmRef": "ealab-dsrm"
+  },
+  "guestDefaults": {
+    "locale": "en-US",
+    "timeZone": "UTC",
+    "installTimeoutMinutes": 120,
+    "postInstallTimeoutMinutes": 60,
+    "defaultTools": [],
+    "domainJoinOuPath": ""
+  },
+  "networks": [
+    {
+      "name": "CorpInternal",
+      "switchType": "Internal",
+      "subnet": "192.168.20.0/24",
+      "gateway": "192.168.20.1",
+      "dnsServers": [
+        "192.168.20.10",
+        "192.168.20.11"
+      ]
+    }
+  ],
+  "baseImages": {
+    "windowsServer2019": {
+      "isoPath": "E:\\ISOs\\17763.253.190108-0006.rs5_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso",
+      "productKey": ""
+    },
+    "windowsServer2022": {
+      "isoPath": "E:\\ISOs\\20348.169.210806-2348.fe_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso",
+      "productKey": ""
+    },
+    "windowsClient": {
+      "isoPath": "",
+      "productKey": ""
+    },
+    "linux": {
+      "isoPath": "",
+      "distro": ""
+    }
+  },
+  "vmDefinitions": [
+    {
+      "name": "DC01",
+      "role": "DomainController",
+      "roles": [
+        "DomainController",
+        "DNS"
+      ],
+      "os": "windowsServer2022",
+      "generation": 2,
+      "secureBoot": true,
+      "tpmEnabled": false,
+      "hardware": {
+        "cpuCount": 2,
+        "memoryMB": 4096,
+        "diskSizeGB": 80
+      },
+      "network": "CorpInternal",
+      "staticIP": "192.168.20.10",
+      "count": 1,
+      "notes": "Primary forest root domain controller.",
+      "domainController": {
+        "deploymentType": "newForest"
+      },
+      "orchestration": {
+        "phaseTag": "dc-primary",
+        "bootstrap": "winrm"
+      },
+      "guestConfiguration": {
+        "computerName": "DC01",
+        "network": {
+          "ipAddress": "192.168.20.10",
+          "subnetMask": "255.255.255.0",
+          "gateway": "192.168.20.1",
+          "dnsServers": [
+            "127.0.0.1",
+            "192.168.20.11"
+          ]
+        },
+        "domainJoin": {
+          "enabled": false,
+          "ouPath": "",
+          "credentialRef": ""
+        },
+        "tools": [],
+        "firstBootScript": ""
+      }
+    },
+    {
+      "name": "DC02",
+      "role": "DomainController",
+      "roles": [
+        "DomainController",
+        "DNS"
+      ],
+      "os": "windowsServer2022",
+      "generation": 2,
+      "secureBoot": true,
+      "tpmEnabled": false,
+      "hardware": {
+        "cpuCount": 2,
+        "memoryMB": 4096,
+        "diskSizeGB": 80
+      },
+      "network": "CorpInternal",
+      "staticIP": "192.168.20.11",
+      "count": 1,
+      "notes": "Additional domain controller for redundancy.",
+      "domainController": {
+        "deploymentType": "additional",
+        "sourceDcName": "DC01"
+      },
+      "orchestration": {
+        "phaseTag": "dc-additional",
+        "bootstrap": "winrm"
+      },
+      "guestConfiguration": {
+        "computerName": "DC02",
+        "network": {
+          "ipAddress": "192.168.20.11",
+          "subnetMask": "255.255.255.0",
+          "gateway": "192.168.20.1",
+          "dnsServers": [
+            "192.168.20.10",
+            "127.0.0.1"
+          ]
+        },
+        "domainJoin": {
+          "enabled": false,
+          "ouPath": "",
+          "credentialRef": ""
+        },
+        "tools": [],
+        "firstBootScript": ""
+      }
+    },
+    {
+      "name": "APP01",
+      "role": "MemberServer",
+      "roles": [
+        "MemberServer"
+      ],
+      "os": "windowsServer2022",
+      "generation": 2,
+      "secureBoot": true,
+      "tpmEnabled": false,
+      "hardware": {
+        "cpuCount": 2,
+        "memoryMB": 3072,
+        "diskSizeGB": 100
+      },
+      "network": "CorpInternal",
+      "staticIP": "192.168.20.21",
+      "count": 1,
+      "notes": "Application member server.",
+      "orchestration": {
+        "phaseTag": "member",
+        "bootstrap": "winrm"
+      },
+      "guestConfiguration": {
+        "computerName": "APP01",
+        "network": {
+          "ipAddress": "192.168.20.21",
+          "subnetMask": "255.255.255.0",
+          "gateway": "192.168.20.1",
+          "dnsServers": [
+            "192.168.20.10",
+            "192.168.20.11"
+          ]
+        },
+        "domainJoin": {
+          "enabled": true,
+          "ouPath": "OU=Servers,DC=corp,DC=lab,DC=local",
+          "credentialRef": "ealab-domain-admin"
+        },
+        "tools": [
+          "RSAT-AD-Tools"
+        ],
+        "firstBootScript": ""
+      }
+    }
+  ],
+  "globalHardwareDefaults": {
+    "cpuCount": 2,
+    "memoryMB": 2048,
+    "diskSizeGB": 60
+  },
+  "storage": {
+    "vmRootPath": "E:\\EALabs",
+    "logsPath": "E:\\EALabs\\Logs"
+  },
+  "orchestration": {
+    "engine": "hybrid",
+    "controller": "shared",
+    "postProvisionEnabled": true,
+    "playbookProfile": "default-ad",
+    "inventoryStrategy": "per-lab",
+    "skipOrchestration": false
+  }
+}

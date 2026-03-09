@@ -1,0 +1,13 @@
+---
+# This file documents expected extra-vars keys used by the default-ad profile.
+# It is not consumed automatically by ansible-playbook.
+
+domainFqdn: "lab.local"
+domainNetbiosName: "LAB"
+domainSafeModePassword: ""
+domainAdminUser: ""
+domainAdminPassword: ""
+domainJoinOuPath: ""
+
+lab_enable_ad_promotion: false
+lab_enable_domain_join: false
